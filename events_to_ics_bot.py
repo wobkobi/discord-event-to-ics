@@ -1,26 +1,20 @@
 """
 events_to_ics_bot.py
 ────────────────────
-A Discord bot that gives every user a personal iCalendar feed of events
-they mark “Interested” on.
+A Discord bot that gives every user a personal iCalendar feed of Interested events.
 
-Configuration via environment (e.g. a .env file):
-  • DISCORD_TOKEN   – your bot token (required)
-  • BASE_URL        – public base URL, e.g. https://calendar.example.com (required)
-  • HTTP_PORT       – port to serve feeds on (optional; defaults to 8080)
+Config via .env or environment:
+  DISCORD_TOKEN   – bot token (required)
+  BASE_URL        – public URL base (e.g. https://calendar.example.com) (required)
+  HTTP_PORT       – port for feeds (default: 8080)
+  DEV_GUILD_ID    – if set, register slash cmds only to this guild for testing
 
-Required Intents:
-  • GUILD_SCHEDULED_EVENTS
-  • MESSAGE_CONTENT
+Required intents:
+  GUILD_SCHEDULED_EVENTS, MESSAGE_CONTENT
 """
 
 from __future__ import annotations
-
-import os
-import re
-import json
-import asyncio
-import datetime as dt
+import os, re, json, asyncio, datetime as dt
 from pathlib import Path
 
 import pytz
@@ -30,22 +24,27 @@ from interactions.api.events import GuildScheduledEventUserAdd
 from ics import Calendar, Event
 from dotenv import load_dotenv
 
-# ─────────────── Configuration ───────────────
+# ─── Config ──────────────────────────────────────────────────
 load_dotenv()
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-BASE_URL = os.getenv("BASE_URL")
-PORT = int(os.getenv("HTTP_PORT", "8080"))
+TOKEN = os.getenv("DISCORD_TOKEN") or ""
+BASE_URL = os.getenv("BASE_URL") or ""
+HTTP_PORT = int(os.getenv("HTTP_PORT", "8080"))
 TZ = pytz.timezone(os.getenv("TIMEZONE", "UTC"))
 
-if not TOKEN:
-    raise RuntimeError("Environment variable DISCORD_TOKEN is required")
-if not BASE_URL:
-    raise RuntimeError("Environment variable BASE_URL is required")
+DEV_GUILD_ID = os.getenv("DEV_GUILD_ID")
+GUILD_SCOPE = [int(DEV_GUILD_ID)] if DEV_GUILD_ID else None
 
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN is required")
+if not BASE_URL:
+    raise RuntimeError("BASE_URL is required")
+
+# where we store per-user .json indexes and .ics feeds
 DATA_DIR = Path(os.getenv("DATA_DIR", "calendars"))
 DATA_DIR.mkdir(exist_ok=True)
 
+# ─── Bot & Intents ───────────────────────────────────────────
 intents = (
     interactions.Intents.DEFAULT
     | interactions.Intents.GUILD_SCHEDULED_EVENTS
@@ -55,7 +54,7 @@ bot = interactions.Client(token=TOKEN, intents=intents)
 
 EVENT_RE = re.compile(r"https?://(?:www\.)?discord\.com/events/(\d+)/(\d+)")
 
-# ─────────────── HTTP Server ───────────────
+# ─── HTTP Server ─────────────────────────────────────────────
 app = aiohttp.web.Application()
 app.add_routes([aiohttp.web.static("/cal", DATA_DIR, show_index=False)])
 
@@ -63,42 +62,41 @@ app.add_routes([aiohttp.web.static("/cal", DATA_DIR, show_index=False)])
 async def run_http():
     runner = aiohttp.web.AppRunner(app)
     await runner.setup()
-    site = aiohttp.web.TCPSite(runner, "0.0.0.0", PORT)
+    site = aiohttp.web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
     await site.start()
-    print(f"🌐  Serving calendar feeds on port {PORT}")
+    print(f"🌐  Serving /cal on port {HTTP_PORT}")
 
 
-# ─────────────── Helpers ───────────────
-def feed_url(user_id: int) -> str:
-    return f"{BASE_URL}/cal/{user_id}.ics"
+# ─── Helpers ──────────────────────────────────────────────────
+def feed_url(uid: int) -> str:
+    return f"{BASE_URL}/cal/{uid}.ics"
 
 
-def idx_path(user_id: int) -> Path:
-    return DATA_DIR / f"{user_id}.json"
+def idx_path(uid: int) -> Path:
+    return DATA_DIR / f"{uid}.json"
 
 
-def ics_path(user_id: int) -> Path:
-    return DATA_DIR / f"{user_id}.ics"
+def ics_path(uid: int) -> Path:
+    return DATA_DIR / f"{uid}.ics"
 
 
-def load_index(user_id: int) -> list[dict]:
+def load_index(uid: int) -> list[dict]:
     try:
-        text = idx_path(user_id).read_text()
-        return json.loads(text) if text.strip() else []
+        txt = idx_path(uid).read_text()
+        return json.loads(txt) if txt.strip() else []
     except (FileNotFoundError, json.JSONDecodeError):
         return []
 
 
-def save_index(user_id: int, index: list[dict]) -> None:
-    idx_path(user_id).write_text(json.dumps(index))
+def save_index(uid: int, idx: list[dict]) -> None:
+    idx_path(uid).write_text(json.dumps(idx))
 
 
-def ensure_files(user_id: int) -> None:
-    if not idx_path(user_id).exists():
-        save_index(user_id, [])
-    if not ics_path(user_id).exists():
-        # start with an empty calendar
-        ics_path(user_id).write_bytes(Calendar().serialize().encode())
+def ensure_files(uid: int) -> None:
+    if not idx_path(uid).exists():
+        save_index(uid, [])
+    if not ics_path(uid).exists():
+        ics_path(uid).write_bytes(Calendar().serialize().encode())
 
 
 def event_to_ics(ev) -> Event:
@@ -116,22 +114,22 @@ def event_to_ics(ev) -> Event:
     return e
 
 
-def rebuild_calendar(user_id: int, index: list[dict]) -> None:
+def rebuild_calendar(uid: int, idx: list[dict]) -> None:
     cal = Calendar()
     loop = asyncio.get_event_loop()
-    for entry in index:
+    for ent in idx:
         try:
             ev = loop.run_until_complete(
-                bot.fetch_scheduled_event(entry["guild_id"], entry["id"])
+                bot.fetch_scheduled_event(ent["guild_id"], ent["id"])
             )
             if ev:
                 cal.events.add(event_to_ics(ev))
         except Exception:
             continue
-    ics_path(user_id).write_bytes(cal.serialize().encode())
+    ics_path(uid).write_bytes(cal.serialize().encode())
 
 
-# ─────────────── Bot Events ───────────────
+# ─── Bot Events ──────────────────────────────────────────────
 http_started = False
 
 
@@ -141,12 +139,18 @@ async def on_ready():
     if not http_started:
         asyncio.create_task(run_http())
         http_started = True
-    print("✅ Bot is online and HTTP server started.")
+    print("✅ Bot is online; HTTP server started.")
 
 
-@interactions.slash_command(
+# dynamic slash_command decorator args
+base_kwargs = dict(
     name="mycalendar", description="Get a personal calendar-feed link in DMs"
 )
+if GUILD_SCOPE:
+    base_kwargs["scopes"] = GUILD_SCOPE
+
+
+@interactions.slash_command(**base_kwargs)
 async def mycalendar(ctx: interactions.SlashContext):
     uid = ctx.author.id
     ensure_files(uid)
@@ -162,39 +166,37 @@ async def mycalendar(ctx: interactions.SlashContext):
         "Here’s your personal calendar feed:\n\n"
         f"webcal:// link:\n`{webcal}`\n\n"
         f"HTTPS link:\n`{url}`\n\n"
-        "Whenever you mark a server event as Interested, it will automatically\n"
-        "appear in this feed."
+        "Whenever you mark an event **Interested**, it appears here automatically."
     )
-    print(f"🔗 Sent feed link to user {uid}")
+    print(f"🔗 Sent feed link to {uid}")
 
 
 @bot.listen(GuildScheduledEventUserAdd)
-async def on_interested(event: GuildScheduledEventUserAdd):
-    uid = event.user_id
+async def on_interested(ev: GuildScheduledEventUserAdd):
+    uid = ev.user_id
     ensure_files(uid)
 
     idx = load_index(uid)
-    record = {"guild_id": event.guild_id, "id": event.scheduled_event_id}
-    if record in idx:
+    rec = {"guild_id": ev.guild_id, "id": ev.scheduled_event_id}
+    if rec in idx:
         return
 
-    idx.append(record)
+    idx.append(rec)
     save_index(uid, idx)
     rebuild_calendar(uid, idx)
 
     user = await bot.fetch_user(uid)
     try:
-        ev = await bot.fetch_scheduled_event(event.guild_id, event.scheduled_event_id)
+        se = await bot.fetch_scheduled_event(ev.guild_id, ev.scheduled_event_id)
         await user.send(
-            f"Added **{ev.name}** to your calendar feed ✅\n"
-            f"Feed URL: {feed_url(uid)}"
+            f"Added **{se.name}** to your feed ✅\nFeed URL: {feed_url(uid)}"
         )
-        print(f"➕ Added event {ev.id} for user {uid}")
+        print(f"➕ Added {se.id} for user {uid}")
     except interactions.Forbidden:
-        print(f"⚠️ Could not DM user {uid}")
+        print(f"⚠️ Cannot DM user {uid}")
 
 
-# ─────────────── Run ───────────────
+# ─── Entry Point ─────────────────────────────────────────────
 if __name__ == "__main__":
-    print("🚀 Starting Events→ICS Bot…")
+    print("🚀 Starting Events→ICS bot…")
     bot.start()
