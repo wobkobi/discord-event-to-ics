@@ -1,50 +1,50 @@
 """
 events_to_ics_bot.py
-────────────────────
-A Discord bot that gives every user a personal iCalendar feed of Interested events.
 
-Config via .env or environment:
-  DISCORD_TOKEN   – bot token (required)
-  BASE_URL        – public URL base (e.g. https://calendar.example.com) (required)
-  HTTP_PORT       – port for feeds (default: 8080)
-  DEV_GUILD_ID    – if set, register slash cmds only to this guild for testing
-
-Required intents:
-  GUILD_SCHEDULED_EVENTS, MESSAGE_CONTENT
+A Discord bot that gives every user a personal iCalendar feed of Interested events,
+with robust error handling and a simple homepage.
 """
 
 from __future__ import annotations
-import os, re, json, asyncio, datetime as dt
+import os
+import json
+import asyncio
+import datetime as dt
+import traceback
 from pathlib import Path
+from typing import Any, cast
 
 import pytz
 import aiohttp.web
 import interactions
-from interactions.api.events import GuildScheduledEventUserAdd
+from interactions.client.errors import Forbidden
+
+# we no longer import the event class by type; we listen by its event name
 from ics import Calendar, Event
 from dotenv import load_dotenv
 
-# ─── Config ──────────────────────────────────────────────────
+# ─── Configuration ────────────────────────────────────────────
 load_dotenv()
 
-TOKEN = os.getenv("DISCORD_TOKEN") or ""
-BASE_URL = os.getenv("BASE_URL") or ""
+TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
+BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
 HTTP_PORT = int(os.getenv("HTTP_PORT", "8080"))
-TZ = pytz.timezone(os.getenv("TIMEZONE", "UTC"))
+TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "UTC"))
 
 DEV_GUILD_ID = os.getenv("DEV_GUILD_ID")
-GUILD_SCOPE = [int(DEV_GUILD_ID)] if DEV_GUILD_ID else None
+GUILD_SCOPE: list[int] | None = [int(DEV_GUILD_ID)] if DEV_GUILD_ID else None
 
 if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN is required")
+    raise RuntimeError("⚠️ DISCORD_TOKEN is required")
 if not BASE_URL:
-    raise RuntimeError("BASE_URL is required")
+    raise RuntimeError("⚠️ BASE_URL is required")
 
-# where we store per-user .json indexes and .ics feeds
+# Directory where we store per-user indexes and .ics files
 DATA_DIR = Path(os.getenv("DATA_DIR", "calendars"))
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# ─── Bot & Intents ───────────────────────────────────────────
+
+# ─── Bot Setup ───────────────────────────────────────────────
 intents = (
     interactions.Intents.DEFAULT
     | interactions.Intents.GUILD_SCHEDULED_EVENTS
@@ -52,60 +52,120 @@ intents = (
 )
 bot = interactions.Client(token=TOKEN, intents=intents)
 
-EVENT_RE = re.compile(r"https?://(?:www\.)?discord\.com/events/(\d+)/(\d+)")
 
 # ─── HTTP Server ─────────────────────────────────────────────
 app = aiohttp.web.Application()
-app.add_routes([aiohttp.web.static("/cal", DATA_DIR, show_index=False)])
 
 
-async def run_http():
+async def handle_home(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """
+    Serve a simple homepage explaining how to use the bot.
+    """
+    try:
+        html = f"""
+        <html>
+          <head><title>Discord Events → ICS Bot</title></head>
+          <body style="font-family: sans-serif; padding: 2rem;">
+            <h1>Discord Events → ICS Bot</h1>
+            <p>
+              In Discord, run <code>/mycalendar</code> to receive your personal iCalendar feed link.
+            </p>
+            <p>
+              Feeds are served at:
+              <code>{BASE_URL}/cal/&lt;YOUR_USER_ID&gt;.ics</code>
+            </p>
+          </body>
+        </html>
+        """
+        return aiohttp.web.Response(text=html, content_type="text/html")
+    except Exception:
+        traceback.print_exc()
+        return aiohttp.web.Response(text="Internal server error", status=500)
+
+
+# Mount our static ICS feeds under /cal
+app.add_routes(
+    [
+        aiohttp.web.get("/", handle_home),
+        aiohttp.web.static("/cal", DATA_DIR, show_index=False),
+    ]
+)
+
+
+async def run_http() -> None:
+    """
+    Start the aiohttp server on 0.0.0.0:HTTP_PORT.
+    """
     runner = aiohttp.web.AppRunner(app)
     await runner.setup()
     site = aiohttp.web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
     await site.start()
-    print(f"🌐  Serving /cal on port {HTTP_PORT}")
+    print(f"🌐 HTTP server running on port {HTTP_PORT}")
 
 
-# ─── Helpers ──────────────────────────────────────────────────
+# ─── File & Calendar Helpers ─────────────────────────────────
 def feed_url(uid: int) -> str:
+    """Return the public HTTPS URL of a user's .ics feed."""
     return f"{BASE_URL}/cal/{uid}.ics"
 
 
 def idx_path(uid: int) -> Path:
+    """Return the Path to the user's JSON index."""
     return DATA_DIR / f"{uid}.json"
 
 
 def ics_path(uid: int) -> Path:
+    """Return the Path to the user's ICS file."""
     return DATA_DIR / f"{uid}.ics"
 
 
 def load_index(uid: int) -> list[dict]:
+    """
+    Load a user's index (list of {"guild_id":…, "id":…}) from disk.
+    On any error, returns an empty list.
+    """
     try:
-        txt = idx_path(uid).read_text()
-        return json.loads(txt) if txt.strip() else []
-    except (FileNotFoundError, json.JSONDecodeError):
+        raw = idx_path(uid).read_text()
+        return json.loads(raw) if raw.strip() else []
+    except Exception:
+        traceback.print_exc()
         return []
 
 
 def save_index(uid: int, idx: list[dict]) -> None:
-    idx_path(uid).write_text(json.dumps(idx))
+    """Save a user's index list back to disk."""
+    try:
+        idx_path(uid).write_text(json.dumps(idx))
+    except Exception:
+        traceback.print_exc()
 
 
 def ensure_files(uid: int) -> None:
-    if not idx_path(uid).exists():
-        save_index(uid, [])
-    if not ics_path(uid).exists():
-        ics_path(uid).write_bytes(Calendar().serialize().encode())
+    """
+    Guarantee both the JSON index and ICS file exist for this user.
+    Creates empty ones if missing.
+    """
+    try:
+        if not idx_path(uid).exists():
+            save_index(uid, [])
+        if not ics_path(uid).exists():
+            ics_path(uid).write_bytes(Calendar().serialize().encode())
+    except Exception:
+        traceback.print_exc()
 
 
-def event_to_ics(ev) -> Event:
+def event_to_ics(ev: Any) -> Event:
+    """
+    Convert a Discord ScheduledEvent object into an ics.Event.
+    """
     e = Event()
     e.name = ev.name
     e.description = (ev.description or "")[:2000]
     e.url = f"https://discord.com/events/{ev.guild_id}/{ev.id}"
-    e.begin = ev.start_time.astimezone(TZ)
-    e.end = (ev.end_time or (ev.start_time + dt.timedelta(hours=1))).astimezone(TZ)
+    e.begin = ev.start_time.astimezone(TIMEZONE)
+    e.end = (ev.end_time or (ev.start_time + dt.timedelta(hours=1))).astimezone(
+        TIMEZONE
+    )
     meta = getattr(ev, "entity_metadata", None)
     if meta and getattr(meta, "location", None):
         e.location = meta.location
@@ -115,26 +175,34 @@ def event_to_ics(ev) -> Event:
 
 
 def rebuild_calendar(uid: int, idx: list[dict]) -> None:
-    cal = Calendar()
-    loop = asyncio.get_event_loop()
-    for ent in idx:
-        try:
-            ev = loop.run_until_complete(
-                bot.fetch_scheduled_event(ent["guild_id"], ent["id"])
-            )
-            if ev:
-                cal.events.add(event_to_ics(ev))
-        except Exception:
-            continue
-    ics_path(uid).write_bytes(cal.serialize().encode())
+    """
+    Re-fetch every event in the user's index and write out a new ICS file.
+    """
+    try:
+        cal = Calendar()
+        loop = asyncio.get_event_loop()
+        for rec in idx:
+            try:
+                guild_id = int(rec["guild_id"])
+                ev_id = int(rec["id"])
+                ev = loop.run_until_complete(bot.fetch_scheduled_event(guild_id, ev_id))
+                if ev:
+                    cal.events.add(event_to_ics(ev))
+            except Exception:
+                traceback.print_exc()
+                continue
+        ics_path(uid).write_bytes(cal.serialize().encode())
+    except Exception:
+        traceback.print_exc()
 
 
-# ─── Bot Events ──────────────────────────────────────────────
+# ─── Bot Event Handlers ──────────────────────────────────────
 http_started = False
 
 
 @bot.listen()
 async def on_ready():
+    """When the bot is ready, start the HTTP server (once)."""
     global http_started
     if not http_started:
         asyncio.create_task(run_http())
@@ -142,61 +210,89 @@ async def on_ready():
     print("✅ Bot is online; HTTP server started.")
 
 
-# dynamic slash_command decorator args
-base_kwargs = dict(
-    name="mycalendar", description="Get a personal calendar-feed link in DMs"
-)
+# Build slash‐command kwargs with correct types
+cmd_kwargs: dict[str, Any] = {
+    "name": "mycalendar",
+    "description": "Get your personal calendar-feed link",
+}
 if GUILD_SCOPE:
-    base_kwargs["scopes"] = GUILD_SCOPE
+    cmd_kwargs["scopes"] = GUILD_SCOPE  # list[int], as expected by interactions
 
 
-@interactions.slash_command(**base_kwargs)
+@interactions.slash_command(**cmd_kwargs)
 async def mycalendar(ctx: interactions.SlashContext):
-    uid = ctx.author.id
-    ensure_files(uid)
-    idx = load_index(uid)
-    if idx:
+    """
+    /mycalendar
+    Ensures user files exist, rebuilds their feed if needed, and DMs them the link.
+    """
+    try:
+        uid = int(ctx.author.id)
+        ensure_files(uid)
+
+        idx = load_index(uid)
+        if idx:
+            rebuild_calendar(uid, idx)
+
+        url = feed_url(uid)
+        webcal = url.replace("https://", "webcal://").replace("http://", "webcal://")
+
+        await ctx.send("✅ I've DM’d you your calendar link.", ephemeral=True)
+
+        # cast so Pylance knows `author` is never None
+        author = cast(interactions.User, ctx.author)
+        await author.send(
+            "Here’s your personal calendar feed:\n\n"
+            f"• webcal://{webcal}\n"
+            f"• {url}\n\n"
+            "Whenever you mark an event **Interested**, it appears here automatically."
+        )
+        print(f"🔗 Sent feed link to user {uid}")
+    except Exception:
+        traceback.print_exc()
+        await ctx.send(
+            "⚠️ Could not generate your calendar link. Please try again later.",
+            ephemeral=True,
+        )
+
+
+@bot.listen("guild_scheduled_event_user_add")
+async def on_interested(ev: Any):
+    """
+    Fires when a user marks a scheduled event as Interested.
+    Adds it to their index, rebuilds their calendar, and notifies them by DM.
+    """
+    try:
+        uid = int(ev.user_id)
+        ensure_files(uid)
+
+        rec = {"guild_id": int(ev.guild_id), "id": int(ev.scheduled_event_id)}
+        idx = load_index(uid)
+
+        if rec in idx:
+            return  # already in their feed
+
+        idx.append(rec)
+        save_index(uid, idx)
         rebuild_calendar(uid, idx)
 
-    url = feed_url(uid)
-    webcal = url.replace("https://", "webcal://").replace("http://", "webcal://")
+        # cast so Pylance knows `user` is never None
+        user = cast(interactions.User, await bot.fetch_user(uid))
 
-    await ctx.send("I’ve sent your personal calendar link via DM.", ephemeral=True)
-    await ctx.author.send(
-        "Here’s your personal calendar feed:\n\n"
-        f"webcal:// link:\n`{webcal}`\n\n"
-        f"HTTPS link:\n`{url}`\n\n"
-        "Whenever you mark an event **Interested**, it appears here automatically."
-    )
-    print(f"🔗 Sent feed link to {uid}")
-
-
-@bot.listen(GuildScheduledEventUserAdd)
-async def on_interested(ev: GuildScheduledEventUserAdd):
-    uid = ev.user_id
-    ensure_files(uid)
-
-    idx = load_index(uid)
-    rec = {"guild_id": ev.guild_id, "id": ev.scheduled_event_id}
-    if rec in idx:
-        return
-
-    idx.append(rec)
-    save_index(uid, idx)
-    rebuild_calendar(uid, idx)
-
-    user = await bot.fetch_user(uid)
-    try:
-        se = await bot.fetch_scheduled_event(ev.guild_id, ev.scheduled_event_id)
-        await user.send(
-            f"Added **{se.name}** to your feed ✅\nFeed URL: {feed_url(uid)}"
+        # fetch the event, but guard against None
+        se = await bot.fetch_scheduled_event(
+            int(ev.guild_id), int(ev.scheduled_event_id)
         )
-        print(f"➕ Added {se.id} for user {uid}")
-    except interactions.Forbidden:
-        print(f"⚠️ Cannot DM user {uid}")
+        event_name = getattr(se, "name", "an event")
+
+        await user.send(f"✅ Added **{event_name}** to your feed: {feed_url(uid)}")
+        print(f"➕ Added event {ev.scheduled_event_id} for user {uid}")
+    except Forbidden:
+        print(f"⚠️ Cannot DM user {ev.user_id} (they may have DMs closed)")
+    except Exception:
+        traceback.print_exc()
 
 
 # ─── Entry Point ─────────────────────────────────────────────
 if __name__ == "__main__":
-    print("🚀 Starting Events→ICS bot…")
+    print("🚀 Starting Events → ICS bot…")
     bot.start()
