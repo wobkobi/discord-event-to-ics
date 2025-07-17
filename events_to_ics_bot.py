@@ -1,8 +1,9 @@
+#!/usr/bin/env python3
 """
 events_to_ics_bot.py
 
 A Discord bot that gives every user a personal iCalendar feed of Interested events,
-with robust error handling and a simple homepage.
+with robust error handling, detailed logging, and a simple homepage.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import json
 import asyncio
 import datetime as dt
 import traceback
+import logging
 from pathlib import Path
 from typing import Any, cast
 
@@ -18,8 +20,6 @@ import pytz
 import aiohttp.web
 import interactions
 from interactions.client.errors import Forbidden
-
-# we no longer import the event class by type; we listen by its event name
 from ics import Calendar, Event
 from dotenv import load_dotenv
 
@@ -28,7 +28,7 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
-HTTP_PORT = int(os.getenv("HTTP_PORT", "8080"))
+HTTP_PORT = int(os.getenv("HTTP_PORT","")) 
 TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "UTC"))
 
 DEV_GUILD_ID = os.getenv("DEV_GUILD_ID")
@@ -43,6 +43,12 @@ if not BASE_URL:
 DATA_DIR = Path(os.getenv("DATA_DIR", "calendars"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+# ─── Logging Setup ────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+log = logging.getLogger("events_to_ics")
 
 # ─── Bot Setup ───────────────────────────────────────────────
 intents = (
@@ -52,38 +58,41 @@ intents = (
 )
 bot = interactions.Client(token=TOKEN, intents=intents)
 
-
 # ─── HTTP Server ─────────────────────────────────────────────
 app = aiohttp.web.Application()
+
+
+@aiohttp.web.middleware
+async def request_logger(request, handler):
+    log.info(f"HTTP {request.method} {request.path_qs} from {request.remote}")
+    try:
+        return await handler(request)
+    except Exception:
+        log.exception("Error handling HTTP request")
+        return aiohttp.web.Response(text="Internal server error", status=500)
+
+
+app.middlewares.append(request_logger)
 
 
 async def handle_home(request: aiohttp.web.Request) -> aiohttp.web.Response:
     """
     Serve a simple homepage explaining how to use the bot.
     """
-    try:
-        html = f"""
-        <html>
-          <head><title>Discord Events → ICS Bot</title></head>
-          <body style="font-family: sans-serif; padding: 2rem;">
-            <h1>Discord Events → ICS Bot</h1>
-            <p>
-              In Discord, run <code>/mycalendar</code> to receive your personal iCalendar feed link.
-            </p>
-            <p>
-              Feeds are served at:
-              <code>{BASE_URL}/cal/&lt;YOUR_USER_ID&gt;.ics</code>
-            </p>
-          </body>
-        </html>
-        """
-        return aiohttp.web.Response(text=html, content_type="text/html")
-    except Exception:
-        traceback.print_exc()
-        return aiohttp.web.Response(text="Internal server error", status=500)
+    html = f"""
+    <html>
+      <head><title>Discord Events → ICS Bot</title></head>
+      <body style="font-family: sans-serif; padding: 2rem;">
+        <h1>Discord Events → ICS Bot</h1>
+        <p>In Discord, run <code>/mycalendar</code> to receive your personal feed link.</p>
+        <p>Feeds are served at: <code>{BASE_URL}/cal/&lt;YOUR_USER_ID&gt;.ics</code></p>
+      </body>
+    </html>
+    """
+    return aiohttp.web.Response(text=html, content_type="text/html")
 
 
-# Mount our static ICS feeds under /cal
+# Mount static ICS feeds under /cal
 app.add_routes(
     [
         aiohttp.web.get("/", handle_home),
@@ -100,7 +109,7 @@ async def run_http() -> None:
     await runner.setup()
     site = aiohttp.web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
     await site.start()
-    print(f"🌐 HTTP server running on port {HTTP_PORT}")
+    log.info(f"HTTP server running on port {HTTP_PORT}")
 
 
 # ─── File & Calendar Helpers ─────────────────────────────────
@@ -128,7 +137,7 @@ def load_index(uid: int) -> list[dict]:
         raw = idx_path(uid).read_text()
         return json.loads(raw) if raw.strip() else []
     except Exception:
-        traceback.print_exc()
+        log.exception(f"Failed to load index for user {uid}")
         return []
 
 
@@ -137,7 +146,7 @@ def save_index(uid: int, idx: list[dict]) -> None:
     try:
         idx_path(uid).write_text(json.dumps(idx))
     except Exception:
-        traceback.print_exc()
+        log.exception(f"Failed to save index for user {uid}")
 
 
 def ensure_files(uid: int) -> None:
@@ -151,7 +160,7 @@ def ensure_files(uid: int) -> None:
         if not ics_path(uid).exists():
             ics_path(uid).write_bytes(Calendar().serialize().encode())
     except Exception:
-        traceback.print_exc()
+        log.exception(f"Failed to ensure files for user {uid}")
 
 
 def event_to_ics(ev: Any) -> Event:
@@ -189,11 +198,11 @@ def rebuild_calendar(uid: int, idx: list[dict]) -> None:
                 if ev:
                     cal.events.add(event_to_ics(ev))
             except Exception:
-                traceback.print_exc()
+                log.exception(f"Skipping failed event fetch {rec}")
                 continue
         ics_path(uid).write_bytes(cal.serialize().encode())
     except Exception:
-        traceback.print_exc()
+        log.exception(f"Failed to rebuild calendar for user {uid}")
 
 
 # ─── Bot Event Handlers ──────────────────────────────────────
@@ -207,7 +216,7 @@ async def on_ready():
     if not http_started:
         asyncio.create_task(run_http())
         http_started = True
-    print("✅ Bot is online; HTTP server started.")
+    log.info("Bot is online; HTTP server started.")
 
 
 # Build slash‐command kwargs with correct types
@@ -216,7 +225,7 @@ cmd_kwargs: dict[str, Any] = {
     "description": "Get your personal calendar-feed link",
 }
 if GUILD_SCOPE:
-    cmd_kwargs["scopes"] = GUILD_SCOPE  # list[int], as expected by interactions
+    cmd_kwargs["scopes"] = GUILD_SCOPE
 
 
 @interactions.slash_command(**cmd_kwargs)
@@ -225,10 +234,9 @@ async def mycalendar(ctx: interactions.SlashContext):
     /mycalendar
     Ensures user files exist, rebuilds their feed if needed, and DMs them the link.
     """
+    uid = int(ctx.author.id)
     try:
-        uid = int(ctx.author.id)
         ensure_files(uid)
-
         idx = load_index(uid)
         if idx:
             rebuild_calendar(uid, idx)
@@ -237,18 +245,16 @@ async def mycalendar(ctx: interactions.SlashContext):
         webcal = url.replace("https://", "webcal://").replace("http://", "webcal://")
 
         await ctx.send("✅ I've DM’d you your calendar link.", ephemeral=True)
-
-        # cast so Pylance knows `author` is never None
         author = cast(interactions.User, ctx.author)
         await author.send(
-            "Here’s your personal calendar feed:\n\n"
+            f"Here’s your personal calendar feed:\n\n"
             f"• webcal://{webcal}\n"
             f"• {url}\n\n"
             "Whenever you mark an event **Interested**, it appears here automatically."
         )
-        print(f"🔗 Sent feed link to user {uid}")
+        log.info(f"Sent feed link to user {uid}")
     except Exception:
-        traceback.print_exc()
+        log.exception(f"Error in /mycalendar for user {uid}")
         await ctx.send(
             "⚠️ Could not generate your calendar link. Please try again later.",
             ephemeral=True,
@@ -261,38 +267,32 @@ async def on_interested(ev: Any):
     Fires when a user marks a scheduled event as Interested.
     Adds it to their index, rebuilds their calendar, and notifies them by DM.
     """
+    uid = int(ev.user_id)
+    rec = {"guild_id": int(ev.guild_id), "id": int(ev.scheduled_event_id)}
     try:
-        uid = int(ev.user_id)
         ensure_files(uid)
-
-        rec = {"guild_id": int(ev.guild_id), "id": int(ev.scheduled_event_id)}
         idx = load_index(uid)
-
         if rec in idx:
-            return  # already in their feed
+            return  # already added
 
         idx.append(rec)
         save_index(uid, idx)
         rebuild_calendar(uid, idx)
 
-        # cast so Pylance knows `user` is never None
         user = cast(interactions.User, await bot.fetch_user(uid))
-
-        # fetch the event, but guard against None
         se = await bot.fetch_scheduled_event(
             int(ev.guild_id), int(ev.scheduled_event_id)
         )
-        event_name = getattr(se, "name", "an event")
-
-        await user.send(f"✅ Added **{event_name}** to your feed: {feed_url(uid)}")
-        print(f"➕ Added event {ev.scheduled_event_id} for user {uid}")
+        name = getattr(se, "name", "an event")
+        await user.send(f"✅ Added **{name}** to your feed: {feed_url(uid)}")
+        log.info(f"➕ Added event {ev.scheduled_event_id} for user {uid}")
     except Forbidden:
-        print(f"⚠️ Cannot DM user {ev.user_id} (they may have DMs closed)")
+        log.warning(f"Cannot DM user {uid} (DMs may be closed)")
     except Exception:
-        traceback.print_exc()
+        log.exception(f"Error handling interest for user {uid}")
 
 
 # ─── Entry Point ─────────────────────────────────────────────
 if __name__ == "__main__":
-    print("🚀 Starting Events → ICS bot…")
+    log.info("🚀 Starting Events → ICS bot…")
     bot.start()
