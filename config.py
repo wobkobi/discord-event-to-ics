@@ -2,7 +2,7 @@ import os
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
-import pytz
+import datetime
 
 # Load environment variables from .env
 load_dotenv()
@@ -37,8 +37,8 @@ BASE_URL = os.getenv("BASE_URL", "http://localhost").rstrip("/")
 # HTTP port for the aiohttp server
 HTTP_PORT = int(os.getenv("HTTP_PORT", "9000"))
 
-# Timezone for event times
-TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "UTC"))
+# Timezone for event times: detect from system clock
+TIMEZONE = datetime.datetime.now().astimezone().tzinfo
 
 # Poll interval in minutes for refreshing feeds
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "15"))

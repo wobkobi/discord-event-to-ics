@@ -15,4 +15,9 @@ logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 intents = Intents.GUILDS | Intents.GUILD_SCHEDULED_EVENTS
 
 # Instantiate the bot client
-bot = Client(token=TOKEN, intents=intents)
+bot = Client(
+    token=TOKEN,
+    intents=intents,
+    sync_interactions=True,  # push commands at startup
+    delete_unused_application_cmds=True,  # remove any old commands
+)
