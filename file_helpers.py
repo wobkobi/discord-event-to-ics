@@ -13,10 +13,13 @@ log = logging.getLogger(__name__)
 
 
 def feed_url(uid: int) -> str:
-    """
-    Return the public URL for a user's .ics feed.
-    """
-    return f"{BASE_URL}/cal/{uid}.ics"
+
+    # turn https://calendar.example.com into webcal://calendar.example.com
+    from urllib.parse import urlparse
+
+    parsed = urlparse(BASE_URL)
+    host = parsed.netloc
+    return f"webcal://{host}/cal/{uid}.ics"
 
 
 def idx_path(uid: int) -> Path:
