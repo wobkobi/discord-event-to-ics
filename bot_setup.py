@@ -19,5 +19,4 @@ bot = Client(
     token=TOKEN,
     intents=intents,
     sync_interactions=True,  # push commands at startup
-    delete_unused_application_cmds=True,  # remove any old commands
 )
