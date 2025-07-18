@@ -11,7 +11,7 @@ from config import BASE_URL, DATA_DIR
 
 log = logging.getLogger(__name__)
 
-# URL + path helpers 
+# URL + path helpers
 
 
 def feed_url(uid):
@@ -66,3 +66,27 @@ def ensure_files(uid):
             ics_path(uid).write_bytes(Calendar().serialize().encode())
     except Exception:
         log.exception("Failed ensuring files for user %s", uid)
+
+
+# ────────────────────────── user settings I/O ───────────────────────────────
+def settings_path(uid):
+    return DATA_DIR / f"{uid}.settings.json"
+
+
+def load_settings(uid):
+    p = settings_path(uid)
+    if not p.exists():
+        return {"alerts": [0], "default_length": 60}
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        log.exception("Failed loading settings for %s", uid)
+        return {"alerts": [0], "default_length": 60}
+
+
+def save_settings(uid, settings):
+    try:
+        settings_path(uid).write_text(json.dumps(settings))
+        log.info("Saved settings for %s → %s", uid, settings)
+    except Exception:
+        log.exception("Failed saving settings for %s", uid)

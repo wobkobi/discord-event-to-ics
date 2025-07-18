@@ -1,9 +1,4 @@
-"""calendar_builder.py – builds per‑user iCalendar feeds from Discord events
-
-All static type‑hints have been removed for simplicity. Behaviour is identical
-(FIFO: fetch event → convert → write .ics). Compatible with Outlook, Apple, and
-Google Calendar.
-"""
+"""calendar_builder.py – builds per-user iCalendar feeds with alerts and default length support"""
 
 import asyncio
 import datetime as dt
@@ -16,27 +11,24 @@ from ics.grammar.parse import ContentLine
 
 from bot_setup import bot
 from config import DATA_DIR, POLL_INTERVAL, TIMEZONE
-from file_helpers import ics_path, load_index, save_index, ensure_files
+from file_helpers import ics_path, load_index, save_index, ensure_files, load_settings
 
 log = logging.getLogger(__name__)
 
 _LAT_LON = re.compile(r"^\s*(-?\d{1,3}\.\d+),\s*(-?\d{1,3}\.\d+)\s*$")
 
-# helpers
+# ───────────────────────────── helpers ─────────────────────────────────────
 
 
 def _add_prop(component, name, value):
-    """Attach an extra ContentLine; ics‑py will serialize it verbatim."""
     component.extra.append(ContentLine(name=name, params={}, value=value))
 
 
 def _apply_location(e, meta, guild_id, ev_id):
     if not meta:
         return
-
     loc = getattr(meta, "location", None)
     loc_url = getattr(meta, "location_url", None)
-
     if loc:
         e.location = loc
         if m := _LAT_LON.match(loc):
@@ -50,9 +42,9 @@ def _apply_location(e, meta, guild_id, ev_id):
         ch_id = getattr(meta, "channel_id", None)
         if ch_id:
             chan = bot.cache.get_channel(int(ch_id))
-            chan_name = getattr(chan, "name", f"id {ch_id}") if chan else f"id {ch_id}"
-            e.location = f"Discord channel: {chan_name}"
-            e.url = f"https://discord.com/events/{guild_id}/{ev_id}"
+            name = getattr(chan, "name", f"id {ch_id}") if chan else f"id {ch_id}"
+            e.location = f"Discord channel: {name}"
+            e.url = f"https://discord.com/channels/{guild_id}/{ch_id}"
 
 
 def _apply_recurrence(e, recurrence):
@@ -61,36 +53,46 @@ def _apply_recurrence(e, recurrence):
             _add_prop(e, "RRULE", rule)
 
 
-# event → VEVENT
+# ───────────────────────── event to VEVENT ─────────────────────────────────
 
 
-def event_to_ics(ev, guild_id):
+def event_to_ics(ev, guild_id, user_id):
+    """Convert a ScheduledEvent into an ICS Event, with alerts & default length."""
     e = Event()
     e.uid = f"{ev.id}@discord-{guild_id}"
-
-    last_edit = (
-        getattr(ev, "updated_at", None)
-        or getattr(ev, "last_updated_at", None)
-        or getattr(ev, "edited_timestamp", None)
-    )
-    if last_edit:
-        _add_prop(e, "SEQUENCE", str(int(last_edit.timestamp())))
-
+    # Sequence for edits
+    last = getattr(ev, "updated_at", None) or getattr(ev, "edited_timestamp", None)
+    if last:
+        _add_prop(e, "SEQUENCE", str(int(last.timestamp())))
+    # Time handling
+    start = ev.start_time.astimezone(TIMEZONE)
+    end = ev.end_time.astimezone(TIMEZONE) if ev.end_time else None
+    settings = load_settings(user_id)
+    # Default length
+    if end is None:
+        length = settings.get("default_length", 60)
+        end = start + dt.timedelta(minutes=length)
+    e.begin = start
+    e.end = end
+    # Core props
     e.name = ev.name
-    e.begin = ev.start_time.astimezone(TIMEZONE)
-    e.end = (ev.end_time or (ev.start_time + dt.timedelta(hours=1))).astimezone(
-        TIMEZONE
-    )
     e.description = (ev.description or "").strip()
-
+    # Recurrence + location
     _apply_recurrence(e, getattr(ev, "recurrence", None))
     _apply_location(e, getattr(ev, "entity_metadata", None), guild_id, ev.id)
+    # Alarms
+    alerts = settings.get("alerts", [0])
+    for mins in sorted(set(alerts)):
+        _add_prop(e, "BEGIN", "VALARM")
+        _add_prop(e, "ACTION", "DISPLAY")
+        _add_prop(e, "DESCRIPTION", e.name)
+        trig = f"-PT{mins}M" if mins else "-PT0M"
+        _add_prop(e, "TRIGGER", trig)
+        _add_prop(e, "END", "VALARM")
     return e
 
 
-# user‑calendar rebuild
-
-aSYNC_DEF_CACHE = {}
+# ───────────────────────── rebuild calendar ─────────────────────────────────
 
 
 async def rebuild_calendar(user_id, idx):
@@ -102,56 +104,45 @@ async def rebuild_calendar(user_id, idx):
         ("X-WR-TIMEZONE", str(TIMEZONE)),
     ]:
         _add_prop(cal, k, v)
-
     updated = []
     for rec in idx:
         gid, eid = rec["guild_id"], rec["id"]
         ev = None
-        # Retry up to 3 times on rate-limit / bucket-lock
         for attempt in range(1, 4):
             try:
                 ev = await bot.fetch_scheduled_event(gid, eid)
                 break
             except RuntimeError as exc:
-                msg = str(exc).lower()
-                if "locked" in msg or "ratelimit" in msg:
-                    wait = attempt  # simple backoff: 1s, 2s, 3s
+                if "locked" in str(exc).lower():
+                    wait = attempt
                     log.warning(
-                        "Rate-limit on event %s, attempt %d/3 – retrying in %ds",
-                        eid,
-                        attempt,
-                        wait,
+                        "Rate-limit on %s (try %d) – sleeping %ds", eid, attempt, wait
                     )
                     await asyncio.sleep(wait)
                     continue
-                raise
+                break
         if ev:
-            cal.events.add(event_to_ics(ev, gid))
+            cal.events.add(event_to_ics(ev, gid, user_id))
             updated.append(rec)
         else:
-            log.error("Failed to fetch event %s after 3 retries; skipping for now", eid)
-
+            log.error("Failed fetching %s after retries", eid)
     if updated != idx:
         save_index(user_id, updated)
-
     ics_path(user_id).write_bytes(cal.serialize().encode())
     log.info("Saved .ics for %s (%d events)", user_id, len(cal.events))
 
 
-# cron‑style poller
+# ─────────────────────── cron-style poller ────────────────────────────────
 
 
 async def poll_new_events():
-    """On boot: rebuild every calendar, then repeat every POLL_INTERVAL minutes."""
     while True:
-        for json_idx in DATA_DIR.glob("*.json"):
+        for file in DATA_DIR.glob("*.json"):
             try:
-                uid = int(json_idx.stem)
+                uid = int(file.stem)
             except ValueError:
                 continue
-
             ensure_files(uid)
-            index = load_index(uid)
-            await rebuild_calendar(uid, index)
-
+            idx = load_index(uid)
+            await rebuild_calendar(uid, idx)
         await asyncio.sleep(POLL_INTERVAL * 60)
