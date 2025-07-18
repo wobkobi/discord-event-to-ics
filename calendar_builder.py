@@ -1,13 +1,14 @@
-# calendar_builder.py – Clean, RFC 5545‑compliant builder
-"""Builds per‑user iCalendar feeds from Discord Scheduled Events.
-Compatible with Outlook, Apple Calendar, and Google Calendar.
+"""calendar_builder.py – builds per‑user iCalendar feeds from Discord events
+
+All static type‑hints have been removed for simplicity.  Behaviour is identical
+(FIFO: fetch event → convert → write .ics). Compatible with Outlook, Apple, and
+Google Calendar.
 """
 
 import asyncio
 import datetime as dt
 import logging
 import re
-from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
 from ics import Calendar, Event, Geo
@@ -17,33 +18,24 @@ from bot_setup import bot
 from config import DATA_DIR, POLL_INTERVAL, TIMEZONE
 from file_helpers import ics_path, load_index, save_index, ensure_files
 
-
 log = logging.getLogger(__name__)
 
-# Matches simple "lat,lon" strings – e.g. "40.6892,-74.0445"
 _LAT_LON = re.compile(r"^\s*(-?\d{1,3}\.\d+),\s*(-?\d{1,3}\.\d+)\s*$")
 
-# ---------------------------------------------------------------------------
-# Utility helpers
-# ---------------------------------------------------------------------------
+# ───────────────────────────── helpers ─────────────────────────────────────
 
 
-def _add_prop(component: Any, name: str, value: str) -> None:
-    """Attach an extra ContentLine so ics‑py can clone/serialize safely."""
+def _add_prop(component, name, value):
+    """Attach an extra ContentLine; ics‑py will serialize it verbatim."""
     component.extra.append(ContentLine(name=name, params={}, value=value))
 
 
-# ---------------------------------------------------------------------------
-# Location & recurrence handlers
-# ---------------------------------------------------------------------------
-
-
-def _apply_location(e: Event, meta: Any, guild_id: int, ev_id: int) -> None:
+def _apply_location(e, meta, guild_id, ev_id):
     if not meta:
         return
 
-    loc: Optional[str] = getattr(meta, "location", None)
-    loc_url: Optional[str] = getattr(meta, "location_url", None)
+    loc = getattr(meta, "location", None)
+    loc_url = getattr(meta, "location_url", None)
 
     if loc:
         e.location = loc
@@ -63,18 +55,16 @@ def _apply_location(e: Event, meta: Any, guild_id: int, ev_id: int) -> None:
             e.url = f"https://discord.com/events/{guild_id}/{ev_id}"
 
 
-def _apply_recurrence(e: Event, recurrence: Optional[List[str]]) -> None:
+def _apply_recurrence(e, recurrence):
     if recurrence:
         for rule in recurrence:
             _add_prop(e, "RRULE", rule)
 
 
-# ---------------------------------------------------------------------------
-# Event converter
-# ---------------------------------------------------------------------------
+# ───────────────────────── event → VEVENT ──────────────────────────────────
 
 
-def event_to_ics(ev: Any, guild_id: int) -> Event:
+def event_to_ics(ev, guild_id):
     e = Event()
     e.uid = f"{ev.id}@discord-{guild_id}"
 
@@ -98,13 +88,12 @@ def event_to_ics(ev: Any, guild_id: int) -> Event:
     return e
 
 
-# ---------------------------------------------------------------------------
-# Calendar rebuild per user
-# ---------------------------------------------------------------------------
+# ───────────────────────── user‑calendar rebuild ───────────────────────────
+
+aSYNC_DEF_CACHE = {}
 
 
-async def rebuild_calendar(user_id: int, idx: List[Dict[str, int]]) -> None:
-    """Regenerate a user's ICS feed from their event index."""
+async def rebuild_calendar(user_id, idx):
     cal = Calendar()
     for k, v in [
         ("PRODID", "-//Discord Events → ICS Bot//EN"),
@@ -114,33 +103,31 @@ async def rebuild_calendar(user_id: int, idx: List[Dict[str, int]]) -> None:
     ]:
         _add_prop(cal, k, v)
 
-    updated_idx: List[Dict[str, int]] = []
+    updated = []
     for rec in idx:
         gid, eid = rec["guild_id"], rec["id"]
         try:
             ev = await bot.fetch_scheduled_event(gid, eid)
             if ev:
                 cal.events.add(event_to_ics(ev, gid))
-                updated_idx.append(rec)
+                updated.append(rec)
         except Exception as exc:
             if getattr(exc, "status", None) != 404:
                 log.exception("Fetching event %s failed: %s", eid, exc)
-                updated_idx.append(rec)
+                updated.append(rec)
 
-    if updated_idx != idx:
-        save_index(user_id, updated_idx)
+    if updated != idx:
+        save_index(user_id, updated)
 
     ics_path(user_id).write_bytes(cal.serialize().encode())
     log.info("Saved .ics for %s (%d events)", user_id, len(cal.events))
 
 
-# ---------------------------------------------------------------------------
-# Poller – immediate initial sync then recurring
-# ---------------------------------------------------------------------------
+# ───────────────────────── cron‑style poller ───────────────────────────────
 
 
-async def poll_new_events() -> None:
-    """On boot: rebuild all calendars immediately, then every POLL_INTERVAL."""
+async def poll_new_events():
+    """On boot: rebuild every calendar, then repeat every POLL_INTERVAL minutes."""
     while True:
         for json_idx in DATA_DIR.glob("*.json"):
             try:

@@ -1,18 +1,13 @@
-"""event_handlers.py – respond to Discord guild-scheduled-event webhooks
+"""event_handlers.py – respond to Discord guild‑scheduled‑event webhooks
 
-All IDs coming from `interactions.py` are `Snowflake_Type`, typed as
-`Union[int, str]` and thus *not* accepted as `SupportsInt`.  We cast each ID to
-`int` at the boundary using `_to_int()`, which accepts either form and keeps
-static type‑checkers quiet.
+Minimal version with no static‑type hints.  We still cast Discord Snowflakes to
+plain `int` for JSON and file helpers, but all typing imports and `# type:`
+comments have been removed for brevity.
 """
-
-from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List, SupportsInt, Tuple, Union
 
-from interactions import listen
 from interactions.api.events import (
     GuildScheduledEventDelete,
     GuildScheduledEventUpdate,
@@ -27,63 +22,47 @@ from server import run_http
 
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# ────────────────  helpers  ────────────────────────────────────────────────
-# ---------------------------------------------------------------------------
+# ───────────────────────────── helpers ──────────────────────────────────────
 
 
-def _to_int(value: Union[SupportsInt, str, None]) -> int | None:  # noqa: D401
-    """Convert a Snowflake (int‑like or numeric str) to `int`, else **None**.
-
-    *Accepts* → `int`, any object implementing `__int__`, numeric `str`, or
-    `None`.  Returns `None` if the input is `None` or cannot be sensibly cast.
-    """
-
-    if value is None:
-        return None
+def _to_int(value):
+    """Return int(value) when possible, else None."""
     try:
-        return int(value)
+        return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
 
 
-def _extract_ids(evt: Any) -> Tuple[int | None, int | None]:
-    """Return `(guild_id, event_id)` for *any* guild‑scheduled‑event payload."""
-
-    # 1) look for a ScheduledEvent object in common attributes
+def _extract_ids(evt):
+    """Return (guild_id, event_id) for any scheduled‑event payload."""
     for attr in ("scheduled_event", "after", "before"):
         se = getattr(evt, attr, None)
-        if se is not None:
+        if se:
             gid = _to_int(getattr(se, "guild_id", None))
             eid = _to_int(getattr(se, "id", None))
-            if gid is not None and eid is not None:
+            if gid and eid:
                 return gid, eid
 
-    # 2) fall back to flat fields present on some payloads
     gid = _to_int(getattr(evt, "guild_id", None))
     eid = _to_int(getattr(evt, "scheduled_event_id", None) or getattr(evt, "id", None))
     return gid, eid
 
 
-# ---------------------------------------------------------------------------
-# 1) User clicks “Interested”
-# ---------------------------------------------------------------------------
+# ───────────────────────── listeners ────────────────────────────────────────
 
 
-@listen(GuildScheduledEventUserAdd)
-async def on_interested(evt: GuildScheduledEventUserAdd):  # noqa: D401
-    """Add the event to the user’s index and rebuild their calendar."""
-
+@bot.listen(GuildScheduledEventUserAdd)
+async def on_interested(evt):
     uid = _to_int(evt.user_id)
     gid, eid = _extract_ids(evt)
 
-    if uid is None or gid is None or eid is None:
+    if not all((uid, gid, eid)):
         log.warning("Interested payload missing ids – skipping")
         return
 
     ensure_files(uid)
 
-    rec: Dict[str, int] = {"guild_id": gid, "id": eid}
+    rec = {"guild_id": gid, "id": eid}
 
     idx = load_index(uid)
     if not any(r["id"] == eid and r["guild_id"] == gid for r in idx):
@@ -93,15 +72,10 @@ async def on_interested(evt: GuildScheduledEventUserAdd):  # noqa: D401
         log.info("Added event %s to user %s and rebuilt calendar", eid, uid)
 
 
-# ---------------------------------------------------------------------------
-# 2) Event UPDATED – propagate changes
-# ---------------------------------------------------------------------------
-
-
-@listen(GuildScheduledEventUpdate)
-async def on_event_updated(evt: GuildScheduledEventUpdate):  # noqa: D401
+@bot.listen(GuildScheduledEventUpdate)
+async def on_event_updated(evt):
     gid, eid = _extract_ids(evt)
-    if gid is None or eid is None:
+    if not all((gid, eid)):
         log.warning("Event update without ids – skipping")
         return
 
@@ -112,21 +86,16 @@ async def on_event_updated(evt: GuildScheduledEventUpdate):  # noqa: D401
             continue
 
         ensure_files(uid)
-        idx: List[Dict[str, int]] = load_index(uid)
+        idx = load_index(uid)
         if any(r["id"] == eid and r["guild_id"] == gid for r in idx):
             await rebuild_calendar(uid, idx)
             log.info("Rebuilt calendar for %s after update to event %s", uid, eid)
 
 
-# ---------------------------------------------------------------------------
-# 3) Event DELETED – remove from all calendars
-# ---------------------------------------------------------------------------
-
-
-@listen(GuildScheduledEventDelete)
-async def on_event_deleted(evt: GuildScheduledEventDelete):  # noqa: D401
+@bot.listen(GuildScheduledEventDelete)
+async def on_event_deleted(evt):
     gid, eid = _extract_ids(evt)
-    if gid is None or eid is None:
+    if not all((gid, eid)):
         log.warning("Event delete without ids – skipping")
         return
 
@@ -137,7 +106,7 @@ async def on_event_deleted(evt: GuildScheduledEventDelete):  # noqa: D401
             continue
 
         ensure_files(uid)
-        idx: List[Dict[str, int]] = load_index(uid)
+        idx = load_index(uid)
         new_idx = [r for r in idx if not (r["id"] == eid and r["guild_id"] == gid)]
         if new_idx != idx:
             save_index(uid, new_idx)
@@ -148,14 +117,12 @@ async def on_event_deleted(evt: GuildScheduledEventDelete):  # noqa: D401
 
 
 # ---------------------------------------------------------------------------
-# 4) Bot ready – start HTTP server & background poller
+# ready – start HTTP + poller
 # ---------------------------------------------------------------------------
 
 
 @bot.listen("ready")
-async def on_ready(_: Any):  # noqa: D401
-    """Kick off aiohttp server and calendar polling once the bot is online."""
-
+async def on_ready(_):
     log.info("Bot is online; launching HTTP server and polling tasks.")
     asyncio.create_task(run_http())
     asyncio.create_task(poll_new_events())

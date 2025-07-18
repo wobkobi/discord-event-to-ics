@@ -1,22 +1,20 @@
-# bot_setup.py
-"""
-Initializes and exports the Discord bot instance with required intents.
-"""
-import logging
-from interactions import Intents, Client
+"""bot_setup.py – create and export the Discord client (no type‑hints)."""
 
+import logging
+
+from interactions import Client, Intents
 from config import TOKEN
 
-# Configure logging for the bot
+# Silence overly‑verbose logs from dependencies
 logging.getLogger("interactions").setLevel(logging.WARNING)
 logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
-# Request both GUILDS and Scheduled Events intents
+# We need basic guild data + scheduled‑event gateway events
 intents = Intents.GUILDS | Intents.GUILD_SCHEDULED_EVENTS
 
-# Instantiate the bot client
+# The bot instance used throughout the project
 bot = Client(
     token=TOKEN,
     intents=intents,
-    sync_interactions=True,  # push commands at startup
+    sync_interactions=True,
 )
