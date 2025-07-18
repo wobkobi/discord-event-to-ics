@@ -33,9 +33,26 @@ def _to_int(value):
         return None
 
 
+def _dump_attrs(obj, label="evt"):
+    """Log *all* attributes on the given event object for debugging."""
+    attrs = {name: getattr(obj, name) for name in dir(obj) if not name.startswith("__")}
+    log.warning("%s attributes → %s", label, attrs)
+
+
 def _extract_ids(evt):
-    """Return (guild_id, event_id) for any scheduled‑event payload."""
-    for attr in ("scheduled_event", "after", "before"):
+    """Return (guild_id, event_id) for any scheduled‑event payload.
+
+    Covers create, update, delete, and user‑add/remove variants.  Some library
+    versions expose the ScheduledEvent object as `event` instead of
+    `scheduled_event`, so we probe several names.
+    """
+
+    for attr in (
+        "scheduled_event",  # delete/create (cached)
+        "after",  # update – new state
+        "before",  # update – old state
+        "event",  # alt. field used by some builds
+    ):
         se = getattr(evt, attr, None)
         if se:
             gid = _to_int(getattr(se, "guild_id", None))
@@ -43,6 +60,7 @@ def _extract_ids(evt):
             if gid and eid:
                 return gid, eid
 
+    # fall back to flat integers that USER_ADD / USER_REMOVE carry
     gid = _to_int(getattr(evt, "guild_id", None))
     eid = _to_int(getattr(evt, "scheduled_event_id", None) or getattr(evt, "id", None))
     return gid, eid
@@ -76,7 +94,8 @@ async def on_interested(evt):
 async def on_event_updated(evt):
     gid, eid = _extract_ids(evt)
     if not all((gid, eid)):
-        log.warning("Event update without ids – skipping")
+        log.warning("Event delete without ids – skipping")
+        _dump_attrs(evt, "delete_evt")
         return
 
     for idx_file in DATA_DIR.glob("*.json"):
