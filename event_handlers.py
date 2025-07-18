@@ -1,5 +1,6 @@
 """event_handlers.py – respond to Discord guild‑scheduled‑event webhooks
-Minimal, no static‑type hints. Adds robust ID extraction and single loops.
+Minimal, no type‑hints.  Fixes the earlier syntax error and restores three
+listeners (add, update, delete) with optional guild‑ID matching.
 """
 
 import asyncio
@@ -20,6 +21,7 @@ from server import run_http
 log = logging.getLogger(__name__)
 
 # ───────────────────────── helpers ─────────────────────────────────────────
+
 
 def _to_int(v):
     try:
@@ -44,28 +46,46 @@ def _id_from_se(se):
 
 
 def _extract_ids(evt):
-    """Return (guild_id, event_id) for any payload variant."""
+    """Return (guild_id, event_id) no matter how the payload is shaped."""
     for attr in ("scheduled_event", "after", "before", "event"):
         gid, eid = _id_from_se(getattr(evt, attr, None))
-        if gid and eid:
+        if eid:  # event_id is mandatory; guild_id may be None
             return gid, eid
-
     gid = _to_int(getattr(evt, "guild_id", None))
     eid = _to_int(getattr(evt, "scheduled_event_id", None) or getattr(evt, "id", None))
     return gid, eid
 
+
 # ───────────────────────── listeners ───────────────────────────────────────
+
 
 @bot.listen(GuildScheduledEventUserAdd)
 async def on_interested(evt):
     uid = _to_int(evt.user_id)
     gid, eid = _extract_ids(evt)
-    if eid is None:
-        log.warning("Event delete without event_id – skipping")
-        _dump_attrs(evt, "delete_evt")
+    if uid is None or eid is None:
+        log.warning("Interested payload missing ids – skipping")
+        _dump_attrs(evt, "interested_evt")
         return
 
-    for idx_file in DATA_DIR.glob("*.json"): in DATA_DIR.glob("*.json"): in DATA_DIR.glob("*.json"):
+    ensure_files(uid)
+    idx = load_index(uid)
+    if not any(r["id"] == eid and r["guild_id"] == (gid or r["guild_id"]) for r in idx):
+        idx.append({"guild_id": gid or 0, "id": eid})
+        save_index(uid, idx)
+        await rebuild_calendar(uid, idx)
+        log.info("Added event %s to user %s and rebuilt calendar", eid, uid)
+
+
+@bot.listen(GuildScheduledEventUpdate)
+async def on_event_updated(evt):
+    gid, eid = _extract_ids(evt)
+    if eid is None:
+        log.warning("Event update without event_id – skipping")
+        _dump_attrs(evt, "update_evt")
+        return
+
+    for idx_file in DATA_DIR.glob("*.json"):
         try:
             uid = int(idx_file.stem)
         except ValueError:
@@ -81,8 +101,8 @@ async def on_interested(evt):
 @bot.listen(GuildScheduledEventDelete)
 async def on_event_deleted(evt):
     gid, eid = _extract_ids(evt)
-    if not all((gid, eid)):
-        log.warning("Event delete without ids – skipping")
+    if eid is None:
+        log.warning("Event delete without event_id – skipping")
         _dump_attrs(evt, "delete_evt")
         return
 
@@ -94,15 +114,23 @@ async def on_event_deleted(evt):
 
         ensure_files(uid)
         idx = load_index(uid)
-        new_idx = [r for r in idx if not (r["id"] == eid and (gid is None or r["guild_id"] == gid))]
+        new_idx = [
+            r
+            for r in idx
+            if not (r["id"] == eid and (gid is None or r["guild_id"] == gid))
+        ]
         if new_idx != idx:
             save_index(uid, new_idx)
             await rebuild_calendar(uid, new_idx)
-            log.info("Removed deleted event %s from user %s and rebuilt calendar", eid, uid)
+            log.info(
+                "Removed deleted event %s from user %s and rebuilt calendar", eid, uid
+            )
+
 
 # ---------------------------------------------------------------------------
 # ready – start HTTP + poller
 # ---------------------------------------------------------------------------
+
 
 @bot.listen("ready")
 async def on_ready(_):
