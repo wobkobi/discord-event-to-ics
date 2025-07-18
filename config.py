@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 # Load values from .env (if present)
 load_dotenv()
 
-# ───────────────────────── logging ─────────────────────────────────────────
+# logging
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,6 +22,7 @@ logging.getLogger("interactions").setLevel(logging.CRITICAL)
 
 
 class _Ignore404(logging.Filter):
+
     def filter(self, record):
         msg = record.getMessage()
         return not (msg.startswith("GET::https") and "404" in msg)
@@ -29,11 +30,11 @@ class _Ignore404(logging.Filter):
 
 logging.getLogger("interactions").addFilter(_Ignore404())
 
-# ───────────────────────── env config ──────────────────────────────────────
+# env config
 
 TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 if not TOKEN:
-    raise RuntimeError("⚠️  DISCORD_TOKEN env var is required")
+    raise RuntimeError("⚠️ DISCORD_TOKEN env var is required")
 
 BASE_URL = os.getenv("BASE_URL", "http://localhost").rstrip("/")
 HTTP_PORT = int(os.getenv("HTTP_PORT", "9000"))

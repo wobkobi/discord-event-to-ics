@@ -1,8 +1,8 @@
 """server.py – tiny aiohttp web server (no type‑hints).
 
 Serves:
-  • `/`           – HTML instructions page
-  • `/cal/{id}.ics` – raw calendar file for a user
+ • `/`      – HTML instructions page
+ • `/cal/{id}.ics` – raw calendar file for a user
 """
 
 import datetime as dt
@@ -20,7 +20,7 @@ app = aiohttp.web.Application()
 # Pre-compute host for the homepage webcal template
 host = urlparse(BASE_URL).netloc
 
-# ───────────────────────── route handlers ──────────────────────────────────
+# route handlers
 
 
 async def handle_home(request):  # noqa: D401
@@ -64,7 +64,7 @@ async def handle_feed(request):  # noqa: D401
     )
 
 
-# ───────────────────────── routing + runner ───────────────────────────────
+# routing + runner
 
 app.router.add_get("/", handle_home)
 app.router.add_get("/cal/{id}.ics", handle_feed)

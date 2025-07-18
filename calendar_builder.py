@@ -1,6 +1,6 @@
 """calendar_builder.py – builds per‑user iCalendar feeds from Discord events
 
-All static type‑hints have been removed for simplicity.  Behaviour is identical
+All static type‑hints have been removed for simplicity. Behaviour is identical
 (FIFO: fetch event → convert → write .ics). Compatible with Outlook, Apple, and
 Google Calendar.
 """
@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 _LAT_LON = re.compile(r"^\s*(-?\d{1,3}\.\d+),\s*(-?\d{1,3}\.\d+)\s*$")
 
-# ───────────────────────────── helpers ─────────────────────────────────────
+# helpers
 
 
 def _add_prop(component, name, value):
@@ -61,7 +61,7 @@ def _apply_recurrence(e, recurrence):
             _add_prop(e, "RRULE", rule)
 
 
-# ───────────────────────── event → VEVENT ──────────────────────────────────
+# event → VEVENT
 
 
 def event_to_ics(ev, guild_id):
@@ -88,7 +88,7 @@ def event_to_ics(ev, guild_id):
     return e
 
 
-# ───────────────────────── user‑calendar rebuild ───────────────────────────
+# user‑calendar rebuild
 
 aSYNC_DEF_CACHE = {}
 
@@ -123,7 +123,7 @@ async def rebuild_calendar(user_id, idx):
     log.info("Saved .ics for %s (%d events)", user_id, len(cal.events))
 
 
-# ───────────────────────── cron‑style poller ───────────────────────────────
+# cron‑style poller
 
 
 async def poll_new_events():

@@ -11,7 +11,7 @@ from config import BASE_URL, DATA_DIR
 
 log = logging.getLogger(__name__)
 
-# ───────────────────────── URL + path helpers ─────────────────────────────-
+# URL + path helpers 
 
 
 def feed_url(uid):
@@ -28,11 +28,11 @@ def ics_path(uid):
     return DATA_DIR / f"{uid}.ics"
 
 
-# ────────────────────────── JSON index I/O ─────────────────────────────────
+# JSON index I/O
 
 
 def load_index(uid):
-    """Read the user's JSON index.  Return an empty list on any problem."""
+    """Read the user's JSON index. Return an empty list on any problem."""
     try:
         raw = idx_path(uid).read_text()
         data = json.loads(raw) if raw.strip() else []
@@ -51,7 +51,7 @@ def save_index(uid, idx):
         log.exception("Failed saving index for user %s", uid)
 
 
-# ────────────────────────── file existence guard ──────────────────────────
+# file existence guard
 
 
 def ensure_files(uid):

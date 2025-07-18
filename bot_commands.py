@@ -1,6 +1,6 @@
 """bot_commands.py – slash-commands for the Events → ICS bot
 
-All static-type hints have been stripped for simplicity.  The command logic is
+All static-type hints have been stripped for simplicity. The command logic is
 unchanged: `/mycalendar` DMs the caller their personal webcal link, rebuilding
 their feed on-demand.
 """
@@ -17,12 +17,12 @@ from file_helpers import ensure_files, feed_url, load_index
 
 log = logging.getLogger(__name__)
 
-# ───────────────────────────── bot setup ────────────────────────────────────
+# bot setup
 
 intents = Intents.GUILDS | Intents.GUILD_SCHEDULED_EVENTS
 bot = interactions.Client(token=TOKEN, intents=intents)
 
-# ─────────────────────────── slash-commands ─────────────────────────────────
+# slash-commands
 
 
 @interactions.slash_command(

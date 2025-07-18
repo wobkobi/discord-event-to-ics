@@ -1,5 +1,5 @@
 """event_handlers.py – respond to Discord guild‑scheduled‑event webhooks
-Minimal, no type‑hints.  Fixes the earlier syntax error and restores three
+Minimal, no type‑hints. Fixes the earlier syntax error and restores three
 listeners (add, update, delete) with optional guild‑ID matching.
 """
 
@@ -20,7 +20,7 @@ from server import run_http
 
 log = logging.getLogger(__name__)
 
-# ───────────────────────── helpers ─────────────────────────────────────────
+# helpers
 
 
 def _to_int(v):
@@ -56,7 +56,7 @@ def _extract_ids(evt):
     return gid, eid
 
 
-# ───────────────────────── listeners ───────────────────────────────────────
+# listeners
 
 
 @bot.listen(GuildScheduledEventUserAdd)
@@ -127,9 +127,7 @@ async def on_event_deleted(evt):
             )
 
 
-# ---------------------------------------------------------------------------
 # ready – start HTTP + poller
-# ---------------------------------------------------------------------------
 
 
 @bot.listen("ready")
