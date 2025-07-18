@@ -56,13 +56,30 @@ async def handle_home(request: aiohttp.web.Request) -> aiohttp.web.Response:
     return aiohttp.web.Response(text=html, content_type="text/html")
 
 
-async def handle_feed(request: aiohttp.web.Request) -> aiohttp.web.FileResponse:
-    """Serve the ICS feed file for a given user ID."""
-    uid = int(request.match_info.get("id", 0))
+async def handle_feed(request: aiohttp.web.Request) -> aiohttp.web.StreamResponse:
+    """
+    Serve the ICS feed file for a given user ID, with RFC-5545 headers.
+    """
+    try:
+        uid = int(request.match_info["id"])
+    except (KeyError, ValueError):
+        raise aiohttp.web.HTTPNotFound()
+
     path = ics_path(uid)
     if not path.exists():
         raise aiohttp.web.HTTPNotFound()
-    return aiohttp.web.FileResponse(path=path)
+
+    # Stream the file with calendar-specific headers
+    return aiohttp.web.FileResponse(
+        path=path,
+        headers={
+            "Content-Type": "text/calendar; charset=utf-8",
+            # Disposition makes Apple / Outlook happier on first import
+            "Content-Disposition": f'inline; filename="{uid}.ics"',
+            # Disable compression “on the wire” if an ISP or proxy mangles it
+            "Content-Encoding": "identity",
+        },
+    )
 
 
 # Register routes
