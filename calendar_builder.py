@@ -11,11 +11,12 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
 from ics import Calendar, Event, Geo
-from ics.grammar.parse import ContentLine  # correct import path
+from ics.grammar.parse import ContentLine
 
 from bot_setup import bot
 from config import DATA_DIR, POLL_INTERVAL, TIMEZONE
-from file_helpers import ics_path, load_index, save_index
+from file_helpers import ics_path, load_index, save_index, ensure_files
+
 
 log = logging.getLogger(__name__)
 
@@ -146,7 +147,9 @@ async def poll_new_events() -> None:
                 uid = int(json_idx.stem)
             except ValueError:
                 continue
+
+            ensure_files(uid)
             index = load_index(uid)
-            if index:
-                await rebuild_calendar(uid, index)
+            await rebuild_calendar(uid, index)
+
         await asyncio.sleep(POLL_INTERVAL * 60)
