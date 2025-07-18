@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
 from ics import Calendar, Event, Geo
-from ics.grammar.parse import ContentLine  # correct import path for ContentLine
+from ics.grammar.parse import ContentLine  # correct import path
 
 from bot_setup import bot
 from config import DATA_DIR, POLL_INTERVAL, TIMEZONE
@@ -38,7 +38,6 @@ def _add_prop(component: Any, name: str, value: str) -> None:
 
 
 def _apply_location(e: Event, meta: Any, guild_id: int, ev_id: int) -> None:
-    """Populate LOCATION / GEO / URL according to RFC 5545."""
     if not meta:
         return
 
@@ -64,10 +63,9 @@ def _apply_location(e: Event, meta: Any, guild_id: int, ev_id: int) -> None:
 
 
 def _apply_recurrence(e: Event, recurrence: Optional[List[str]]) -> None:
-    if not recurrence:
-        return
-    for rule in recurrence:
-        _add_prop(e, "RRULE", rule)
+    if recurrence:
+        for rule in recurrence:
+            _add_prop(e, "RRULE", rule)
 
 
 # ---------------------------------------------------------------------------
@@ -76,13 +74,9 @@ def _apply_recurrence(e: Event, recurrence: Optional[List[str]]) -> None:
 
 
 def event_to_ics(ev: Any, guild_id: int) -> Event:
-    """Convert a single Discord ScheduledEvent → ics.Event."""
     e = Event()
-
-    # Stable UID so clients detect updates
     e.uid = f"{ev.id}@discord-{guild_id}"
 
-    # Use last edit timestamp (if any) as SEQUENCE so changes propagate
     last_edit = (
         getattr(ev, "updated_at", None)
         or getattr(ev, "last_updated_at", None)
@@ -91,7 +85,6 @@ def event_to_ics(ev: Any, guild_id: int) -> Event:
     if last_edit:
         _add_prop(e, "SEQUENCE", str(int(last_edit.timestamp())))
 
-    # Core fields
     e.name = ev.name
     e.begin = ev.start_time.astimezone(TIMEZONE)
     e.end = (ev.end_time or (ev.start_time + dt.timedelta(hours=1))).astimezone(
@@ -101,7 +94,6 @@ def event_to_ics(ev: Any, guild_id: int) -> Event:
 
     _apply_recurrence(e, getattr(ev, "recurrence", None))
     _apply_location(e, getattr(ev, "entity_metadata", None), guild_id, ev.id)
-
     return e
 
 
@@ -113,16 +105,15 @@ def event_to_ics(ev: Any, guild_id: int) -> Event:
 async def rebuild_calendar(user_id: int, idx: List[Dict[str, int]]) -> None:
     """Regenerate a user's ICS feed from their event index."""
     cal = Calendar()
-    for name, value in [
+    for k, v in [
         ("PRODID", "-//Discord Events → ICS Bot//EN"),
         ("VERSION", "2.0"),
         ("CALSCALE", "GREGORIAN"),
         ("X-WR-TIMEZONE", str(TIMEZONE)),
     ]:
-        _add_prop(cal, name, value)
+        _add_prop(cal, k, v)
 
     updated_idx: List[Dict[str, int]] = []
-
     for rec in idx:
         gid, eid = rec["guild_id"], rec["id"]
         try:
@@ -143,13 +134,12 @@ async def rebuild_calendar(user_id: int, idx: List[Dict[str, int]]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Poller
+# Poller – immediate initial sync then recurring
 # ---------------------------------------------------------------------------
 
 
 async def poll_new_events() -> None:
-    """Background task: refresh every POLL_INTERVAL minutes."""
-    await asyncio.sleep(5)
+    """On boot: rebuild all calendars immediately, then every POLL_INTERVAL."""
     while True:
         for json_idx in DATA_DIR.glob("*.json"):
             try:
