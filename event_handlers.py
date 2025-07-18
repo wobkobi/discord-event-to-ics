@@ -15,20 +15,24 @@ log = logging.getLogger(__name__)
 # ────────────────────────────────────────────────────────────────────────────
 @bot.listen("guild_scheduled_event_user_add")
 async def on_interested(payload: Any) -> None:
-    """When a member marks Interested, add the event to their index and rebuild."""
     uid = payload.user_id
     ensure_files(uid)
-    rec: Dict[str, int] = {
-        "guild_id": payload.guild_id,
-        "id": payload.scheduled_event_id,
-    }
+
+    gid = getattr(payload, "guild_id", None)
+    eid = getattr(payload, "scheduled_event_id", None)
+
+    if gid is None or eid is None:
+        log.warning("Interested payload missing ids – skipping")
+        return
+
+    rec = {"guild_id": gid, "id": eid}
 
     idx = load_index(uid)
-    if not any(r["id"] == rec["id"] and r["guild_id"] == rec["guild_id"] for r in idx):
+    if not any(r["id"] == eid and r["guild_id"] == gid for r in idx):
         idx.append(rec)
         save_index(uid, idx)
         await rebuild_calendar(uid, idx)
-        log.info(f"Added event {rec['id']} to user {uid} and rebuilt calendar")
+        log.info(f"Added event {eid} to user {uid} and rebuilt calendar")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -36,15 +40,16 @@ async def on_interested(payload: Any) -> None:
 # ────────────────────────────────────────────────────────────────────────────
 @bot.listen("guild_scheduled_event_update")
 async def on_event_updated(ev: Any) -> None:
-    gid = getattr(getattr(ev, "guild", None), "id", None) or getattr(
-        ev, "guild_id", None
+    se = getattr(ev, "scheduled_event", None)
+    gid = (
+        getattr(se, "guild_id", None)
+        or getattr(getattr(ev, "guild", None), "id", None)
+        or getattr(ev, "guild_id", None)
     )
-    if gid is None:
-        gid = getattr(ev, "guild_id", None)
+    eid = getattr(se, "id", None) or getattr(ev, "id", None)
 
-    eid = ev.id
-    if gid is None:
-        log.warning("event update without guild id – skipping")
+    if gid is None or eid is None:
+        log.warning("Event update without ids – skipping")
         return
 
     for idx_file in DATA_DIR.glob("*.json"):
@@ -54,7 +59,7 @@ async def on_event_updated(ev: Any) -> None:
             continue
 
         ensure_files(uid)
-        idx: List[Dict[str, int]] = load_index(uid)
+        idx = load_index(uid)
         if any(r["id"] == eid and r["guild_id"] == gid for r in idx):
             await rebuild_calendar(uid, idx)
             log.info(f"Rebuilt calendar for {uid} after update to event {eid}")
@@ -65,10 +70,14 @@ async def on_event_updated(ev: Any) -> None:
 # ────────────────────────────────────────────────────────────────────────────
 @bot.listen("guild_scheduled_event_delete")
 async def on_event_deleted(ev: Any) -> None:
-    gid = getattr(getattr(ev, "guild", None), "id", None) or getattr(
-        ev, "guild_id", None
-    )
-    eid = ev.id
+    # Library quirk: delete payload only exposes .scheduled_event
+    se = getattr(ev, "scheduled_event", None)  # ScheduledEvent | None
+    gid = getattr(se, "guild_id", None) or getattr(ev, "guild_id", None)
+    eid = getattr(se, "id", None) or getattr(ev, "scheduled_event_id", None)
+
+    if gid is None or eid is None:
+        log.warning("event delete without ids – skipping")
+        return
 
     for idx_file in DATA_DIR.glob("*.json"):
         try:
@@ -77,10 +86,8 @@ async def on_event_deleted(ev: Any) -> None:
             continue
 
         ensure_files(uid)
-        idx: List[Dict[str, int]] = load_index(uid)
-        new_idx = [
-            rec for rec in idx if not (rec["id"] == eid and rec["guild_id"] == gid)
-        ]
+        idx = load_index(uid)
+        new_idx = [r for r in idx if not (r["id"] == eid and r["guild_id"] == gid)]
         if new_idx != idx:
             save_index(uid, new_idx)
             await rebuild_calendar(uid, new_idx)
