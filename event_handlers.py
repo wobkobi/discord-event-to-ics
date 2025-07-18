@@ -6,11 +6,6 @@ listeners (add, update, delete) with optional guild‑ID matching.
 import asyncio
 import logging
 
-from interactions.api.events import (
-    GuildScheduledEventDelete,
-    GuildScheduledEventUpdate,
-    GuildScheduledEventUserAdd,
-)
 
 from bot_setup import bot
 from calendar_builder import poll_new_events, rebuild_calendar
@@ -59,7 +54,7 @@ def _extract_ids(evt):
 # listeners
 
 
-@bot.listen(GuildScheduledEventUserAdd)
+@bot.listen("guild_scheduled_event_user_add")
 async def on_interested(evt):
     uid = _to_int(evt.user_id)
     gid, eid = _extract_ids(evt)
@@ -77,7 +72,7 @@ async def on_interested(evt):
         log.info("Added event %s to user %s and rebuilt calendar", eid, uid)
 
 
-@bot.listen(GuildScheduledEventUpdate)
+@bot.listen("guild_scheduled_event_update")
 async def on_event_updated(evt):
     gid, eid = _extract_ids(evt)
     if eid is None:
@@ -98,7 +93,7 @@ async def on_event_updated(evt):
             log.info("Rebuilt calendar for %s after update to event %s", uid, eid)
 
 
-@bot.listen(GuildScheduledEventDelete)
+@bot.listen("guild_scheduled_event_delete")
 async def on_event_deleted(evt):
     gid, eid = _extract_ids(evt)
     if eid is None:

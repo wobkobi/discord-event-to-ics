@@ -106,15 +106,30 @@ async def rebuild_calendar(user_id, idx):
     updated = []
     for rec in idx:
         gid, eid = rec["guild_id"], rec["id"]
-        try:
-            ev = await bot.fetch_scheduled_event(gid, eid)
-            if ev:
-                cal.events.add(event_to_ics(ev, gid))
-                updated.append(rec)
-        except Exception as exc:
-            if getattr(exc, "status", None) != 404:
-                log.exception("Fetching event %s failed: %s", eid, exc)
-                updated.append(rec)
+        ev = None
+        # Retry up to 3 times on rate-limit / bucket-lock
+        for attempt in range(1, 4):
+            try:
+                ev = await bot.fetch_scheduled_event(gid, eid)
+                break
+            except RuntimeError as exc:
+                msg = str(exc).lower()
+                if "locked" in msg or "ratelimit" in msg:
+                    wait = attempt  # simple backoff: 1s, 2s, 3s
+                    log.warning(
+                        "Rate-limit on event %s, attempt %d/3 – retrying in %ds",
+                        eid,
+                        attempt,
+                        wait,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                raise
+        if ev:
+            cal.events.add(event_to_ics(ev, gid))
+            updated.append(rec)
+        else:
+            log.error("Failed to fetch event %s after 3 retries; skipping for now", eid)
 
     if updated != idx:
         save_index(user_id, updated)
