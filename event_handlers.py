@@ -36,10 +36,9 @@ async def on_interested(payload: Any) -> None:
 # ────────────────────────────────────────────────────────────────────────────
 @bot.listen("guild_scheduled_event_update")
 async def on_event_updated(ev: Any) -> None:
-    # ev is a ScheduledEvent object.  Grab its guild ID safely
-    gid = getattr(
-        getattr(ev, "guild", None), "id", None
-    )  # fallback if .guild_id missing
+    gid = getattr(getattr(ev, "guild", None), "id", None) or getattr(
+        ev, "guild_id", None
+    )
     if gid is None:
         gid = getattr(ev, "guild_id", None)
 
@@ -66,7 +65,9 @@ async def on_event_updated(ev: Any) -> None:
 # ────────────────────────────────────────────────────────────────────────────
 @bot.listen("guild_scheduled_event_delete")
 async def on_event_deleted(ev: Any) -> None:
-    gid = ev.guild_id
+    gid = getattr(getattr(ev, "guild", None), "id", None) or getattr(
+        ev, "guild_id", None
+    )
     eid = ev.id
 
     for idx_file in DATA_DIR.glob("*.json"):
