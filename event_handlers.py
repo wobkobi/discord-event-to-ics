@@ -94,9 +94,24 @@ async def on_interested(evt):
 async def on_event_updated(evt):
     gid, eid = _extract_ids(evt)
     if not all((gid, eid)):
-        log.warning("Event delete without ids – skipping")
-        _dump_attrs(evt, "delete_evt")
+        log.warning("Event update without ids – skipping")
+        _dump_attrs(evt, "update_evt")
         return
+
+    # Dump attrs once for visibility even when IDs found
+    _dump_attrs(evt, "update_evt_ok")
+
+    for idx_file in DATA_DIR.glob("*.json"):
+        try:
+            uid = int(idx_file.stem)
+        except ValueError:
+            continue
+
+        ensure_files(uid)
+        idx = load_index(uid)
+        if any(r["id"] == eid and r["guild_id"] == gid for r in idx):
+            await rebuild_calendar(uid, idx)
+            log.info("Rebuilt calendar for %s after update to event %s", uid, eid)
 
     for idx_file in DATA_DIR.glob("*.json"):
         try:
@@ -116,7 +131,26 @@ async def on_event_deleted(evt):
     gid, eid = _extract_ids(evt)
     if not all((gid, eid)):
         log.warning("Event delete without ids – skipping")
+        _dump_attrs(evt, "delete_evt")
         return
+
+    _dump_attrs(evt, "delete_evt_ok")
+
+    for idx_file in DATA_DIR.glob("*.json"):
+        try:
+            uid = int(idx_file.stem)
+        except ValueError:
+            continue
+
+        ensure_files(uid)
+        idx = load_index(uid)
+        new_idx = [r for r in idx if not (r["id"] == eid and r["guild_id"] == gid)]
+        if new_idx != idx:
+            save_index(uid, new_idx)
+            await rebuild_calendar(uid, new_idx)
+            log.info(
+                "Removed deleted event %s from user %s and rebuilt calendar", eid, uid
+            )
 
     for idx_file in DATA_DIR.glob("*.json"):
         try:
