@@ -76,3 +76,19 @@ async def on_event_deleted(ev: Any) -> None:
             log.info(
                 f"Removed deleted event {eid} from user {uid} and rebuilt calendar"
             )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 4)  Bot ready – start HTTP server & polling
+# ────────────────────────────────────────────────────────────────────────────
+from server import run_http  # late import to avoid circulars
+from calendar_builder import poll_new_events
+import asyncio
+
+
+@bot.listen("ready")
+async def on_ready(_: Any) -> None:
+    """Kick off aiohttp server and calendar polling."""
+    log.info("Bot is online; launching HTTP server and polling tasks.")
+    asyncio.create_task(run_http())
+    asyncio.create_task(poll_new_events())
