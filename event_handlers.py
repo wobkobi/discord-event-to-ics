@@ -2,7 +2,7 @@
 import logging
 from typing import Any, Dict, List
 
-from file_helpers import load_index, save_index
+from file_helpers import ensure_files, load_index, save_index
 from calendar_builder import rebuild_calendar
 from config import DATA_DIR
 from bot_setup import bot
@@ -17,13 +17,14 @@ log = logging.getLogger(__name__)
 async def on_interested(payload: Any) -> None:
     """When a member marks Interested, add the event to their index and rebuild."""
     uid = payload.user_id
+    ensure_files(uid)
     rec: Dict[str, int] = {
         "guild_id": payload.guild_id,
         "id": payload.scheduled_event_id,
     }
 
     idx = load_index(uid)
-    if rec not in idx:
+    if not any(r["id"] == rec["id"] and r["guild_id"] == rec["guild_id"] for r in idx):
         idx.append(rec)
         save_index(uid, idx)
         await rebuild_calendar(uid, idx)
@@ -53,6 +54,7 @@ async def on_event_updated(ev: Any) -> None:
         except ValueError:
             continue
 
+        ensure_files(uid)
         idx: List[Dict[str, int]] = load_index(uid)
         if any(r["id"] == eid and r["guild_id"] == gid for r in idx):
             await rebuild_calendar(uid, idx)
@@ -73,6 +75,7 @@ async def on_event_deleted(ev: Any) -> None:
         except ValueError:
             continue
 
+        ensure_files(uid)
         idx: List[Dict[str, int]] = load_index(uid)
         new_idx = [
             rec for rec in idx if not (rec["id"] == eid and rec["guild_id"] == gid)
