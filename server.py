@@ -1,6 +1,9 @@
+# server.py
+# ----------------
 import logging
 import datetime as dt
 import aiohttp.web
+from urllib.parse import urlparse
 
 from config import HTTP_PORT, BASE_URL, POLL_INTERVAL
 from file_helpers import ics_path
@@ -8,9 +11,13 @@ from file_helpers import ics_path
 log = logging.getLogger(__name__)
 app = aiohttp.web.Application()
 
+# parse HOST once for homepage webcal link
+parsed = urlparse(BASE_URL)
+host = parsed.netloc
+
 
 async def handle_home(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    """Serve styled HTML homepage with subscription instructions."""
+    """Serve styled HTML homepage with subscription instructions, offering a webcal link."""
     html = f"""<!DOCTYPE html>
 <html lang=\"en\">
 <head>
@@ -37,8 +44,10 @@ async def handle_home(request: aiohttp.web.Request) -> aiohttp.web.Response:
     <p>Subscribe to your personal calendar feed and stay up-to-date automatically.</p>
     <p>Use the URL below, replacing <code>{'{id}'}</code> with your Discord ID:</p>
     <div class=\"input-group\">
-      <input type=\"text\" readonly value=\"{BASE_URL}/cal/{{YOUR_DISCORD_USER_ID}}.ics\" onclick=\"this.select(); document.execCommand('copy');\" />
-      <button onclick=\"navigator.clipboard.writeText('{BASE_URL}/cal/{{YOUR_DISCORD_USER_ID}}.ics');alert('Copied');\">Copy</button>
+      <input type=\"text\" readonly
+             value=\"webcal://{host}/cal/{{YOUR_DISCORD_USER_ID}}.ics\"
+             onclick=\"this.select(); document.execCommand('copy');\" />
+      <button onclick=\"navigator.clipboard.writeText('webcal://{host}/cal/{{YOUR_DISCORD_USER_ID}}.ics');alert('Copied');\">Copy</button>
     </div>
     <div class=\"footer\">&copy; {dt.datetime.now().year} Bot. Auto-refresh every {POLL_INTERVAL} min.</div>
   </div>

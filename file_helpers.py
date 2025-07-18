@@ -1,9 +1,10 @@
 # file_helpers.py
-
+# ----------------
 import json
 import logging
 from pathlib import Path
 from typing import List, Dict
+from urllib.parse import urlparse
 
 from ics import Calendar
 
@@ -14,9 +15,12 @@ log = logging.getLogger(__name__)
 
 def feed_url(uid: int) -> str:
     """
-    Return the public URL for a user's .ics feed.
+    Return the public URL for a user's .ics feed, using the webcal:// scheme.
     """
-    return f"{BASE_URL}/cal/{uid}.ics"
+    # parse BASE_URL to extract host
+    parsed = urlparse(BASE_URL)
+    host = parsed.netloc
+    return f"webcal://{host}/cal/{uid}.ics"
 
 
 def idx_path(uid: int) -> Path:
