@@ -1,9 +1,8 @@
-# file_helpers.py
-# ----------------
+"""file_helpers.py – path helpers and JSON/ICS persistence (no type-hints)."""
+
 import json
 import logging
 from pathlib import Path
-from typing import List, Dict
 from urllib.parse import urlparse
 
 from ics import Calendar
@@ -12,70 +11,58 @@ from config import BASE_URL, DATA_DIR
 
 log = logging.getLogger(__name__)
 
+# URL + path helpers 
 
-def feed_url(uid: int) -> str:
-    """
-    Return the public URL for a user's .ics feed, using the webcal:// scheme.
-    """
-    # parse BASE_URL to extract host
-    parsed = urlparse(BASE_URL)
-    host = parsed.netloc
+
+def feed_url(uid):
+    """Return the public *webcal://* URL for a user's .ics feed."""
+    host = urlparse(BASE_URL).netloc
     return f"webcal://{host}/cal/{uid}.ics"
 
 
-def idx_path(uid: int) -> Path:
-    """
-    Path to the JSON index for a given user ID.
-    """
+def idx_path(uid):
     return DATA_DIR / f"{uid}.json"
 
 
-def ics_path(uid: int) -> Path:
-    """
-    Path to the .ics file for a given user ID.
-    """
+def ics_path(uid):
     return DATA_DIR / f"{uid}.ics"
 
 
-def load_index(uid: int) -> List[Dict[str, int]]:
-    """
-    Load a user's event index from disk.
-    Returns an empty list on any error or if the file is empty.
-    """
+# JSON index I/O
+
+
+def load_index(uid):
+    """Read the user's JSON index. Return an empty list on any problem."""
     try:
         raw = idx_path(uid).read_text()
-        index = json.loads(raw) if raw.strip() else []
-        log.info(f"Loaded index for user {uid}, {len(index)} entries")
-        return index
+        data = json.loads(raw) if raw.strip() else []
+        log.info("Loaded index for user %s, %d entries", uid, len(data))
+        return data
     except Exception:
-        log.exception(f"Failed loading index for user {uid}")
+        log.exception("Failed loading index for user %s", uid)
         return []
 
 
-def save_index(uid: int, idx: List[Dict[str, int]]) -> None:
-    """
-    Save a user's event index to disk.
-    """
+def save_index(uid, idx):
     try:
         idx_path(uid).write_text(json.dumps(idx))
-        log.info(f"Saved index for user {uid}, {len(idx)} entries")
+        log.info("Saved index for user %s, %d entries", uid, len(idx))
     except Exception:
-        log.exception(f"Failed saving index for user {uid}")
+        log.exception("Failed saving index for user %s", uid)
 
 
-def ensure_files(uid: int) -> None:
-    """
-    Ensure that both the JSON index and ICS file exist for this user.
-    If missing, create an empty index and an empty calendar.
-    """
+# file existence guard
+
+
+def ensure_files(uid):
+    """Guarantee both JSON and ICS files exist for this user."""
     try:
-        idx_file = idx_path(uid)
-        if not idx_file.exists():
-            log.info(f"Creating new index file for user {uid}")
+        if not idx_path(uid).exists():
+            log.info("Creating new index file for user %s", uid)
             save_index(uid, [])
-        ics_file = ics_path(uid)
-        if not ics_file.exists():
-            log.info(f"Creating new ICS feed file for user {uid}")
-            ics_file.write_bytes(Calendar().serialize().encode())
+
+        if not ics_path(uid).exists():
+            log.info("Creating new ICS feed file for user %s", uid)
+            ics_path(uid).write_bytes(Calendar().serialize().encode())
     except Exception:
-        log.exception(f"Failed ensuring files for user {uid}")
+        log.exception("Failed ensuring files for user %s", uid)

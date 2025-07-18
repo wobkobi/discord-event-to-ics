@@ -1,43 +1,89 @@
-# event_handlers.py – handle Discord event updates in real‑time
-import logging
-from typing import Any, Dict, List
+"""event_handlers.py – respond to Discord guild‑scheduled‑event webhooks
+Minimal, no type‑hints. Fixes the earlier syntax error and restores three
+listeners (add, update, delete) with optional guild‑ID matching.
+"""
 
-from file_helpers import load_index, save_index
-from calendar_builder import rebuild_calendar
-from config import DATA_DIR
+import asyncio
+import logging
+
+from interactions.api.events import (
+    GuildScheduledEventDelete,
+    GuildScheduledEventUpdate,
+    GuildScheduledEventUserAdd,
+)
+
 from bot_setup import bot
+from calendar_builder import poll_new_events, rebuild_calendar
+from config import DATA_DIR
+from file_helpers import ensure_files, load_index, save_index
+from server import run_http
 
 log = logging.getLogger(__name__)
 
+# helpers
 
-# ────────────────────────────────────────────────────────────────────────────
-# 1)  User clicks “Interested” – already handled elsewhere, but we keep it here
-# ────────────────────────────────────────────────────────────────────────────
-@bot.listen("guild_scheduled_event_user_add")
-async def on_interested(payload: Any) -> None:
-    """When a member marks Interested, add the event to their index and rebuild."""
-    uid = payload.user_id
-    rec: Dict[str, int] = {
-        "guild_id": payload.guild_id,
-        "id": payload.scheduled_event_id,
-    }
 
+def _to_int(v):
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _dump_attrs(obj, label="evt"):
+    attrs = {n: getattr(obj, n) for n in dir(obj) if not n.startswith("__")}
+    log.warning("%s attrs → %s", label, attrs)
+
+
+def _id_from_se(se):
+    if not se:
+        return None, None
+    gid = _to_int(getattr(se, "guild_id", None)) or _to_int(
+        getattr(getattr(se, "guild", None), "id", None)
+    )
+    eid = _to_int(getattr(se, "id", None))
+    return gid, eid
+
+
+def _extract_ids(evt):
+    """Return (guild_id, event_id) no matter how the payload is shaped."""
+    for attr in ("scheduled_event", "after", "before", "event"):
+        gid, eid = _id_from_se(getattr(evt, attr, None))
+        if eid:  # event_id is mandatory; guild_id may be None
+            return gid, eid
+    gid = _to_int(getattr(evt, "guild_id", None))
+    eid = _to_int(getattr(evt, "scheduled_event_id", None) or getattr(evt, "id", None))
+    return gid, eid
+
+
+# listeners
+
+
+@bot.listen(GuildScheduledEventUserAdd)
+async def on_interested(evt):
+    uid = _to_int(evt.user_id)
+    gid, eid = _extract_ids(evt)
+    if uid is None or eid is None:
+        log.warning("Interested payload missing ids – skipping")
+        _dump_attrs(evt, "interested_evt")
+        return
+
+    ensure_files(uid)
     idx = load_index(uid)
-    if rec not in idx:
-        idx.append(rec)
+    if not any(r["id"] == eid and r["guild_id"] == (gid or r["guild_id"]) for r in idx):
+        idx.append({"guild_id": gid or 0, "id": eid})
         save_index(uid, idx)
         await rebuild_calendar(uid, idx)
-        log.info(f"Added event {rec['id']} to user {uid} and rebuilt calendar")
+        log.info("Added event %s to user %s and rebuilt calendar", eid, uid)
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# 2)  Event gets UPDATED – propagate changes instantly
-# ────────────────────────────────────────────────────────────────────────────
-@bot.listen("guild_scheduled_event_update")
-async def on_event_updated(ev: Any) -> None:
-    """When an event is modified (time, description, etc.), refresh all affected feeds."""
-    gid = ev.guild_id
-    eid = ev.id
+@bot.listen(GuildScheduledEventUpdate)
+async def on_event_updated(evt):
+    gid, eid = _extract_ids(evt)
+    if eid is None:
+        log.warning("Event update without event_id – skipping")
+        _dump_attrs(evt, "update_evt")
+        return
 
     for idx_file in DATA_DIR.glob("*.json"):
         try:
@@ -45,20 +91,20 @@ async def on_event_updated(ev: Any) -> None:
         except ValueError:
             continue
 
-        idx: List[Dict[str, int]] = load_index(uid)
-        if any(rec["id"] == eid and rec["guild_id"] == gid for rec in idx):
-            # This user follows the event → rebuild just their feed
+        ensure_files(uid)
+        idx = load_index(uid)
+        if any(r["id"] == eid and (gid is None or r["guild_id"] == gid) for r in idx):
             await rebuild_calendar(uid, idx)
-            log.info(f"Rebuilt calendar for {uid} after update to event {eid}")
+            log.info("Rebuilt calendar for %s after update to event %s", uid, eid)
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# 3)  Event gets DELETED – remove and rebuild
-# ────────────────────────────────────────────────────────────────────────────
-@bot.listen("guild_scheduled_event_delete")
-async def on_event_deleted(ev: Any) -> None:
-    gid = ev.guild_id
-    eid = ev.id
+@bot.listen(GuildScheduledEventDelete)
+async def on_event_deleted(evt):
+    gid, eid = _extract_ids(evt)
+    if eid is None:
+        log.warning("Event delete without event_id – skipping")
+        _dump_attrs(evt, "delete_evt")
+        return
 
     for idx_file in DATA_DIR.glob("*.json"):
         try:
@@ -66,13 +112,26 @@ async def on_event_deleted(ev: Any) -> None:
         except ValueError:
             continue
 
-        idx: List[Dict[str, int]] = load_index(uid)
+        ensure_files(uid)
+        idx = load_index(uid)
         new_idx = [
-            rec for rec in idx if not (rec["id"] == eid and rec["guild_id"] == gid)
+            r
+            for r in idx
+            if not (r["id"] == eid and (gid is None or r["guild_id"] == gid))
         ]
         if new_idx != idx:
             save_index(uid, new_idx)
             await rebuild_calendar(uid, new_idx)
             log.info(
-                f"Removed deleted event {eid} from user {uid} and rebuilt calendar"
+                "Removed deleted event %s from user %s and rebuilt calendar", eid, uid
             )
+
+
+# ready – start HTTP + poller
+
+
+@bot.listen("ready")
+async def on_ready(_):
+    log.info("Bot is online; launching HTTP server and polling tasks.")
+    asyncio.create_task(run_http())
+    asyncio.create_task(poll_new_events())
