@@ -35,9 +35,17 @@ async def on_interested(payload: Any) -> None:
 # ────────────────────────────────────────────────────────────────────────────
 @bot.listen("guild_scheduled_event_update")
 async def on_event_updated(ev: Any) -> None:
-    """When an event is modified (time, description, etc.), refresh all affected feeds."""
-    gid = ev.guild_id
+    # ev is a ScheduledEvent object.  Grab its guild ID safely
+    gid = getattr(
+        getattr(ev, "guild", None), "id", None
+    )  # fallback if .guild_id missing
+    if gid is None:
+        gid = getattr(ev, "guild_id", None)
+
     eid = ev.id
+    if gid is None:
+        log.warning("event update without guild id – skipping")
+        return
 
     for idx_file in DATA_DIR.glob("*.json"):
         try:
@@ -46,8 +54,7 @@ async def on_event_updated(ev: Any) -> None:
             continue
 
         idx: List[Dict[str, int]] = load_index(uid)
-        if any(rec["id"] == eid and rec["guild_id"] == gid for rec in idx):
-            # This user follows the event → rebuild just their feed
+        if any(r["id"] == eid and r["guild_id"] == gid for r in idx):
             await rebuild_calendar(uid, idx)
             log.info(f"Rebuilt calendar for {uid} after update to event {eid}")
 
