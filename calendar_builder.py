@@ -1,5 +1,6 @@
 # calendar_builder.py – build and update per-user iCalendar feeds,
-# with support for location, default durations, and personalized alerts.
+# with support for location, default durations, and resilient handling when
+# the bot temporarily loses access to a guild.
 
 import asyncio
 import datetime as dt
@@ -7,6 +8,7 @@ import logging
 import re
 from urllib.parse import quote_plus
 
+import discord
 from ics import Calendar, Event, Geo
 from ics.grammar.parse import ContentLine
 
@@ -27,19 +29,16 @@ _LAT_LON = re.compile(r"^\s*(-?\d{1,3}\.\d+),\s*(-?\d{1,3}\.\d+)\s*$")
 
 
 def _add_prop(component, name, value):
-    """
-    Attach a raw ContentLine to a component so ics.py writes it exactly.
-    Useful for RRULE, VALARM, SEQUENCE, and custom headers.
-    """
+    """Attach a raw ContentLine so ics.py writes it exactly."""
     component.extra.append(ContentLine(name=name, params={}, value=value))
 
 
 def _apply_location(event_obj, metadata, guild_id, event_id):
     """
-    Read the Discord entity_metadata and set:
-      - event_obj.location (string)
-      - event_obj.url (link to map or Discord channel)
-      - event_obj.geo (if given as coords)
+    Read Discord entity_metadata and set:
+      - event_obj.location  (string)
+      - event_obj.url       (map link / channel link)
+      - event_obj.geo       (if given as coords)
     """
     if not metadata:
         return
@@ -49,30 +48,27 @@ def _apply_location(event_obj, metadata, guild_id, event_id):
 
     if loc:
         event_obj.location = loc
-        # If it's lat/lon, set Geo; else build a Google search URL
         if m := _LAT_LON.match(loc):
             event_obj.geo = Geo(latitude=float(m.group(1)), longitude=float(m.group(2)))
         else:
-            event_obj.url = f"https://www.google.com/maps/search/{quote_plus(loc)}"
-
+            # Bias WhatsApp free-text to a map search
+            query = quote_plus(loc)
+            event_obj.url = f"https://www.google.com/maps/search/{query}?region=NZ"
     elif loc_url:
         event_obj.location = loc_url
         event_obj.url = loc_url
-
     else:
         ch_id = getattr(metadata, "channel_id", None)
         if ch_id is not None:
             chan = client.get_channel(int(ch_id))
-            # Use getattr to safely retrieve .name if present
+            # Safely grab .name if present
             chan_name = getattr(chan, "name", f"id {ch_id}") if chan else f"id {ch_id}"
             event_obj.location = f"Discord channel: {chan_name}"
             event_obj.url = f"https://discord.com/channels/{guild_id}/{ch_id}"
 
 
 def _apply_recurrence(event_obj, recurrence_rules):
-    """
-    Add each RRULE from Discord to the VEVENT.
-    """
+    """Add each RRULE from Discord to the VEVENT."""
     if recurrence_rules:
         for rule in recurrence_rules:
             _add_prop(event_obj, "RRULE", rule)
@@ -80,52 +76,48 @@ def _apply_recurrence(event_obj, recurrence_rules):
 
 def event_to_ics(ev, guild_id, user_id):
     """
-    Convert a Discord ScheduledEvent into an ics.Event,
-    applying:
-      - SEQUENCE for edits
-      - start/end times with default-length fallback
-      - description, name
-      - recurrence rules
-      - location metadata
-      - personalized VALARM blocks
+    Convert a Discord ScheduledEvent into an ics.Event:
+      • SEQUENCE for edits
+      • start/end with default-length fallback
+      • description, summary
+      • recurrence
+      • location metadata
+      • personalized VALARM blocks
     """
     e = Event()
     e.uid = f"{ev.id}@discord-{guild_id}"
 
-    # 1) SEQUENCE – bump when edited
+    # 1) SEQUENCE (bump when edited)
     last_edit = getattr(ev, "updated_at", None) or getattr(ev, "edited_timestamp", None)
     if last_edit:
-        seq = str(int(last_edit.timestamp()))
-        _add_prop(e, "SEQUENCE", seq)
+        _add_prop(e, "SEQUENCE", str(int(last_edit.timestamp())))
 
-    # 2) Times – apply timezone and default length if needed
+    # 2) Start & end times
     start = ev.start_time.astimezone(TIMEZONE)
     end = ev.end_time.astimezone(TIMEZONE) if ev.end_time else None
 
     settings = load_settings(user_id)
     if end is None:
-        # no explicit end → use default_length (in minutes)
+        # no explicit end → use default_length (minutes)
         length = settings.get("default_length", 60)
         end = start + dt.timedelta(minutes=length)
 
     e.begin = start
     e.end = end
-
-    # 3) Core details
     e.name = ev.name
     e.description = (ev.description or "").strip()
 
-    # 4) Recurrence & location
+    # 3) Optional extras
     _apply_recurrence(e, getattr(ev, "recurrence", None))
     _apply_location(e, getattr(ev, "entity_metadata", None), guild_id, ev.id)
 
-    # 5) VALARM blocks for reminders
+    # 4) VALARM reminders
     for mins in sorted(set(settings.get("alerts", [0]))):
         _add_prop(e, "BEGIN", "VALARM")
         _add_prop(e, "ACTION", "DISPLAY")
         _add_prop(e, "DESCRIPTION", e.name)
-        trigger = f"-PT{mins}M" if mins else "-PT0M"
-        _add_prop(e, "TRIGGER", trigger)
+        trig = f"-PT{mins}M" if mins else "-PT0M"
+        _add_prop(e, "TRIGGER", trig)
         _add_prop(e, "END", "VALARM")
 
     return e
@@ -133,14 +125,13 @@ def event_to_ics(ev, guild_id, user_id):
 
 async def rebuild_calendar(user_id, idx):
     """
-    Regenerate a user's .ics file based on their index of (guild_id, event_id):
-      1) Fetch each ScheduledEvent (with retries on rate-limit)
-      2) Convert to VEVENT via event_to_ics
-      3) Write the full Calendar out to disk
-      4) Trim entries for events that 404
+    Regenerate a user's .ics feed:
+      • Fetch each event (with retries on rate-limit)
+      • Keep only 404-removed events out of the index
+      • Preserve records for 403 or transient errors (so a re-join can recover)
     """
     cal = Calendar()
-    # Custom headers before any events
+    # Calendar-level headers
     for name, value in [
         ("PRODID", "-//Discord Events → ICS Bot//EN"),
         ("VERSION", "2.0"),
@@ -153,49 +144,60 @@ async def rebuild_calendar(user_id, idx):
     for rec in idx:
         gid, eid = rec["guild_id"], rec["id"]
         ev = None
+        removed = False
 
-        # Try up to 3 times if we hit a rate-limit / bucket-lock
+        # up to 3 retries for rate-limit / lock errors
         for attempt in range(1, 4):
             try:
                 guild = client.get_guild(gid) or await client.fetch_guild(gid)
                 ev = await guild.fetch_scheduled_event(eid)
                 break
+
+            except discord.NotFound:
+                log.info("Event %s not found (404) – dropping from index", eid)
+                removed = True
+                break
+
+            except discord.Forbidden:
+                log.warning(
+                    "Missing access to event %s in guild %s (403) – will retry after re-join",
+                    eid,
+                    gid,
+                )
+                break
+
             except Exception as exc:
-                text = str(exc).lower()
-                if "ratelimit" in text or "locked" in text:
-                    log.warning(
-                        "Rate-limit on event %s (try %d) – retrying...", eid, attempt
-                    )
-                    await asyncio.sleep(attempt)
-                    continue
-                log.exception("Error fetching event %s: %s", eid, exc)
+                log.exception(
+                    "Transient error fetching event %s: %s – will retry later", eid, exc
+                )
                 break
 
         if ev:
             cal.events.add(event_to_ics(ev, gid, user_id))
             updated.append(rec)
-        else:
-            log.error("Skipping event %s after failed fetches", eid)
+        elif not removed:
+            # Either Forbidden or another exception – preserve the record
+            updated.append(rec)
 
-    # If some events were removed (404), save the trimmed index
+    # Write back only the 404-removed events
     if updated != idx:
         save_index(user_id, updated)
 
-    # Write out the .ics file
+    # Serialize to disk
     ics_path(user_id).write_bytes(cal.serialize().encode())
-    log.info("Saved .ics for user %s (%d events)", user_id, len(cal.events))
+    log.info("Saved .ics for %s (%d events)", user_id, len(cal.events))
 
 
 async def poll_new_events():
     """
     On startup and every POLL_INTERVAL minutes:
-    • Load each user's index
-    • Rebuild their calendar
+      • Scan each user's index
+      • Rebuild their calendar
     """
     while True:
-        for index_file in DATA_DIR.glob("*.json"):
+        for file in DATA_DIR.glob("*.json"):
             try:
-                uid = int(index_file.stem)
+                uid = int(file.stem)
             except ValueError:
                 continue
             ensure_files(uid)
