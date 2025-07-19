@@ -1,15 +1,15 @@
-"""Entry point for the Events → ICS bot (no type‑hints)."""
+# main.py – entry point for the Events  to  ICS Bot (discord.py)
 
 import logging
+from config import DISCORD_TOKEN
+from bot_setup import client
 
-from event_handlers import bot
-
-# Log only warnings and errors from third‑party libs
+# Only show warnings and errors from third-party libraries
 logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
 if __name__ == "__main__":
-    print("🚀 Starting Events → ICS Bot…")
-    bot.start()
+    print("🚀 Starting Events  to  ICS Bot…")
+    client.run(DISCORD_TOKEN)

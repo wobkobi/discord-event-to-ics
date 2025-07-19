@@ -1,16 +1,16 @@
-"""config.py – project settings without static-type hints."""
+# config.py – project settings without static-type hints.
 
-import datetime as dt
-import logging
 import os
+import logging
+import datetime as dt
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load values from .env (if present)
+# Load .env if present
 load_dotenv()
 
-# logging
+#                         Logging configuration
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,29 +18,30 @@ logging.basicConfig(
 )
 
 # Quiet noisy libraries
-logging.getLogger("interactions").setLevel(logging.CRITICAL)
+logging.getLogger("discord").setLevel(logging.WARNING)
+logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
+#                           Environment variables
 
-class _Ignore404(logging.Filter):
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
+if not DISCORD_TOKEN:
+    raise RuntimeError("⚠️ DISCORD_TOKEN environment variable is required")
 
-    def filter(self, record):
-        msg = record.getMessage()
-        return not (msg.startswith("GET::https") and "404" in msg)
+# For fast guild-scoped command registration in development; leave empty or "0" for global only
+DEV_GUILD_ID = int(os.getenv("DEV_GUILD_ID", "0"))
 
-
-logging.getLogger("interactions").addFilter(_Ignore404())
-
-# env config
-
-TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
-if not TOKEN:
-    raise RuntimeError("⚠️ DISCORD_TOKEN env var is required")
-
+# Base URL for calendar feeds (used by slash commands and homepage)
 BASE_URL = os.getenv("BASE_URL", "http://localhost").rstrip("/")
+
+# HTTP server port for aiohttp
 HTTP_PORT = int(os.getenv("HTTP_PORT", "9000"))
-POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "15"))  # minutes
 
-TIMEZONE = dt.datetime.now().astimezone().tzinfo  # system TZ
+# Poll interval for refreshing calendars (in minutes)
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "15"))
 
+# Timezone for event times (auto-detected from system clock)
+TIMEZONE = dt.datetime.now().astimezone().tzinfo
+
+# Directory to store per-user JSON indices and .ics files
 DATA_DIR = Path(os.getenv("DATA_DIR", "calendars"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
