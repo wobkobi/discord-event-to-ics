@@ -6,4 +6,4 @@ intents = discord.Intents.default()
 intents.guilds           = True
 intents.scheduled_events = True
 
-bot = discord.Bot(intents=intents)   # <— single source of truth
+bot = discord.Bot(intents=intents)   # single source of truth, importable anywhere

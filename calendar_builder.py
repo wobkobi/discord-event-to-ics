@@ -15,7 +15,7 @@ import discord
 from ics import Calendar, Event, Geo
 from ics.grammar.parse import ContentLine
 
-from main import bot
+from bot_setup import bot
 from config import DATA_DIR, POLL_INTERVAL, TIMEZONE
 from file_helpers import ics_path, load_index, save_index, ensure_files
 
