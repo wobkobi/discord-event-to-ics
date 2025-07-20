@@ -1,18 +1,14 @@
-"""event_handlers.py – respond to Discord guild‑scheduled‑event webhooks
-Minimal, no type‑hints. Fixes the earlier syntax error and restores three
-listeners (add, update, delete) with optional guild‑ID matching.
+"""event_handlers.py – respond to Discord guild-scheduled-event webhooks
+Minimal, no type-hints. Three listeners (add, update, delete) plus on_ready.
 """
 
 import asyncio
 import logging
+from pathlib import Path
 
-from interactions.api.events import (
-    GuildScheduledEventDelete,
-    GuildScheduledEventUpdate,
-    GuildScheduledEventUserAdd,
-)
+import discord
 
-from bot_setup import bot
+from main import bot
 from calendar_builder import poll_new_events, rebuild_calendar
 from config import DATA_DIR
 from file_helpers import ensure_files, load_index, save_index
@@ -20,7 +16,7 @@ from server import run_http
 
 log = logging.getLogger(__name__)
 
-# helpers
+# ───────────────────── helper utilities ──────────────────────
 
 
 def _to_int(v):
@@ -31,11 +27,12 @@ def _to_int(v):
 
 
 def _dump_attrs(obj, label="evt"):
-    attrs = {n: getattr(obj, n) for n in dir(obj) if not n.startswith("__")}
+    attrs = {n: getattr(obj, n, None) for n in dir(obj) if not n.startswith("__")}
     log.warning("%s attrs → %s", label, attrs)
 
 
 def _id_from_se(se):
+    """Return (guild_id, event_id) for a ScheduledEvent object (or None, None)."""
     if not se:
         return None, None
     gid = _to_int(getattr(se, "guild_id", None)) or _to_int(
@@ -45,44 +42,54 @@ def _id_from_se(se):
     return gid, eid
 
 
-def _extract_ids(evt):
+def _extract_ids(payload):
     """Return (guild_id, event_id) no matter how the payload is shaped."""
     for attr in ("scheduled_event", "after", "before", "event"):
-        gid, eid = _id_from_se(getattr(evt, attr, None))
+        gid, eid = _id_from_se(getattr(payload, attr, None))
         if eid:  # event_id is mandatory; guild_id may be None
             return gid, eid
-    gid = _to_int(getattr(evt, "guild_id", None))
-    eid = _to_int(getattr(evt, "scheduled_event_id", None) or getattr(evt, "id", None))
+    gid = _to_int(getattr(payload, "guild_id", None))
+    eid = _to_int(
+        getattr(payload, "scheduled_event_id", None) or getattr(payload, "id", None)
+    )
     return gid, eid
 
 
-# listeners
+# ───────────────────────── listeners ─────────────────────────
 
 
-@bot.listen(GuildScheduledEventUserAdd)
-async def on_interested(evt):
-    uid = _to_int(evt.user_id)
-    gid, eid = _extract_ids(evt)
+@bot.event
+async def on_scheduled_event_user_add(
+    event: discord.ScheduledEvent, user: discord.User
+):
+    """User showed interest / RSVP’d."""
+    gid, eid = _id_from_se(event)
+    uid = _to_int(user.id)
+
     if uid is None or eid is None:
         log.warning("Interested payload missing ids – skipping")
-        _dump_attrs(evt, "interested_evt")
+        _dump_attrs(event, "interested_evt")
         return
 
     ensure_files(uid)
     idx = load_index(uid)
+
     if not any(r["id"] == eid and r["guild_id"] == (gid or r["guild_id"]) for r in idx):
         idx.append({"guild_id": gid or 0, "id": eid})
         save_index(uid, idx)
         await rebuild_calendar(uid, idx)
-        log.info("Added event %s to user %s and rebuilt calendar", eid, uid)
+        log.info("Added event %s for user %s and rebuilt calendar", eid, uid)
 
 
-@bot.listen(GuildScheduledEventUpdate)
-async def on_event_updated(evt):
-    gid, eid = _extract_ids(evt)
+@bot.event
+async def on_scheduled_event_update(
+    before: discord.ScheduledEvent, after: discord.ScheduledEvent
+):
+    """An event was edited (time, description, etc.)."""
+    gid, eid = _extract_ids(after)
     if eid is None:
         log.warning("Event update without event_id – skipping")
-        _dump_attrs(evt, "update_evt")
+        _dump_attrs(after, "update_evt")
         return
 
     for idx_file in DATA_DIR.glob("*.json"):
@@ -98,12 +105,15 @@ async def on_event_updated(evt):
             log.info("Rebuilt calendar for %s after update to event %s", uid, eid)
 
 
-@bot.listen(GuildScheduledEventDelete)
-async def on_event_deleted(evt):
-    gid, eid = _extract_ids(evt)
+@bot.event
+async def on_scheduled_event_delete(
+    event: discord.ScheduledEvent,
+):
+    """Event deleted or cancelled."""
+    gid, eid = _id_from_se(event)
     if eid is None:
         log.warning("Event delete without event_id – skipping")
-        _dump_attrs(evt, "delete_evt")
+        _dump_attrs(event, "delete_evt")
         return
 
     for idx_file in DATA_DIR.glob("*.json"):
@@ -127,11 +137,11 @@ async def on_event_deleted(evt):
             )
 
 
-# ready – start HTTP + poller
+# ─────────────────── bot ready: kick off tasks ───────────────────
 
 
-@bot.listen("ready")
-async def on_ready(_):
+@bot.event
+async def on_ready():
     log.info("Bot is online; launching HTTP server and polling tasks.")
     asyncio.create_task(run_http())
     asyncio.create_task(poll_new_events())

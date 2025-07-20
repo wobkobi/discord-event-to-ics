@@ -1,6 +1,6 @@
-"""calendar_builder.py – builds per‑user iCalendar feeds from Discord events
+"""calendar_builder.py – builds per-user iCalendar feeds from Discord events
 
-All static type‑hints have been removed for simplicity. Behaviour is identical
+All static type-hints have been removed for simplicity. Behaviour is identical
 (FIFO: fetch event → convert → write .ics). Compatible with Outlook, Apple, and
 Google Calendar.
 """
@@ -11,10 +11,11 @@ import logging
 import re
 from urllib.parse import quote_plus
 
+import discord
 from ics import Calendar, Event, Geo
 from ics.grammar.parse import ContentLine
 
-from bot_setup import bot
+from main import bot
 from config import DATA_DIR, POLL_INTERVAL, TIMEZONE
 from file_helpers import ics_path, load_index, save_index, ensure_files
 
@@ -22,11 +23,11 @@ log = logging.getLogger(__name__)
 
 _LAT_LON = re.compile(r"^\s*(-?\d{1,3}\.\d+),\s*(-?\d{1,3}\.\d+)\s*$")
 
-# helpers
+# ───────────────────────── helpers ──────────────────────────
 
 
 def _add_prop(component, name, value):
-    """Attach an extra ContentLine; ics‑py will serialize it verbatim."""
+    """Attach an extra ContentLine; ics-py will serialize it verbatim."""
     component.extra.append(ContentLine(name=name, params={}, value=value))
 
 
@@ -49,7 +50,8 @@ def _apply_location(e, meta, guild_id, ev_id):
     else:
         ch_id = getattr(meta, "channel_id", None)
         if ch_id:
-            chan = bot.cache.get_channel(int(ch_id))
+            # Pycord: use get_channel instead of cache.get_channel
+            chan = bot.get_channel(int(ch_id))
             chan_name = getattr(chan, "name", f"id {ch_id}") if chan else f"id {ch_id}"
             e.location = f"Discord channel: {chan_name}"
             e.url = f"https://discord.com/events/{guild_id}/{ev_id}"
@@ -61,7 +63,7 @@ def _apply_recurrence(e, recurrence):
             _add_prop(e, "RRULE", rule)
 
 
-# event → VEVENT
+# ─────────────────────── event → VEVENT ──────────────────────
 
 
 def event_to_ics(ev, guild_id):
@@ -88,9 +90,7 @@ def event_to_ics(ev, guild_id):
     return e
 
 
-# user‑calendar rebuild
-
-aSYNC_DEF_CACHE = {}
+# ────────────────────── user-calendar rebuild ──────────────────────
 
 
 async def rebuild_calendar(user_id, idx):
@@ -107,14 +107,18 @@ async def rebuild_calendar(user_id, idx):
     for rec in idx:
         gid, eid = rec["guild_id"], rec["id"]
         try:
-            ev = await bot.fetch_scheduled_event(gid, eid)
+            # Pycord: fetch event via Guild object
+            guild = bot.get_guild(gid) or await bot.fetch_guild(gid)
+            ev = await guild.fetch_scheduled_event(eid)
             if ev:
                 cal.events.add(event_to_ics(ev, gid))
                 updated.append(rec)
+        except discord.NotFound:
+            # Event or guild not found – drop it from index
+            continue
         except Exception as exc:
-            if getattr(exc, "status", None) != 404:
-                log.exception("Fetching event %s failed: %s", eid, exc)
-                updated.append(rec)
+            log.exception("Fetching event %s failed: %s", eid, exc)
+            updated.append(rec)
 
     if updated != idx:
         save_index(user_id, updated)
@@ -123,7 +127,7 @@ async def rebuild_calendar(user_id, idx):
     log.info("Saved .ics for %s (%d events)", user_id, len(cal.events))
 
 
-# cron‑style poller
+# ───────────────────────── cron-style poller ─────────────────────────
 
 
 async def poll_new_events():
