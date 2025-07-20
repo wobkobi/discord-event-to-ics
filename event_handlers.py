@@ -1,6 +1,4 @@
-"""event_handlers.py – respond to Discord guild-scheduled-event webhooks
-Minimal, no type-hints. Three listeners (add, update, delete) plus on_ready.
-"""
+"""event_handlers.py – respond to Discord scheduled-event hooks (Pycord)"""
 
 import asyncio
 import logging
@@ -31,8 +29,7 @@ def _dump_attrs(obj, label="evt"):
     log.warning("%s attrs → %s", label, attrs)
 
 
-def _id_from_se(se):
-    """Return (guild_id, event_id) for a ScheduledEvent object (or None, None)."""
+def _id_from_se(se: discord.ScheduledEvent):
     if not se:
         return None, None
     gid = _to_int(getattr(se, "guild_id", None)) or _to_int(
@@ -42,53 +39,63 @@ def _id_from_se(se):
     return gid, eid
 
 
-def _extract_ids(payload):
-    """Return (guild_id, event_id) no matter how the payload is shaped."""
-    for attr in ("scheduled_event", "after", "before", "event"):
-        gid, eid = _id_from_se(getattr(payload, attr, None))
-        if eid:  # event_id is mandatory; guild_id may be None
-            return gid, eid
-    gid = _to_int(getattr(payload, "guild_id", None))
-    eid = _to_int(
-        getattr(payload, "scheduled_event_id", None) or getattr(payload, "id", None)
-    )
-    return gid, eid
-
-
 # ───────────────────────── listeners ─────────────────────────
 
 
 @bot.event
 async def on_scheduled_event_user_add(
-    event: discord.ScheduledEvent, user: discord.User
+    scheduled_event: discord.ScheduledEvent, user: discord.User
 ):
-    """User showed interest / RSVP’d."""
-    gid, eid = _id_from_se(event)
+    """User marked themselves interested."""
+    gid, eid = _id_from_se(scheduled_event)
     uid = _to_int(user.id)
-
     if uid is None or eid is None:
-        log.warning("Interested payload missing ids – skipping")
-        _dump_attrs(event, "interested_evt")
+        log.warning("User-add missing IDs – skipping")
+        _dump_attrs(scheduled_event, "add_evt")
         return
 
     ensure_files(uid)
     idx = load_index(uid)
-
     if not any(r["id"] == eid and r["guild_id"] == (gid or r["guild_id"]) for r in idx):
         idx.append({"guild_id": gid or 0, "id": eid})
         save_index(uid, idx)
         await rebuild_calendar(uid, idx)
-        log.info("Added event %s for user %s and rebuilt calendar", eid, uid)
+        log.info("Added event %s for user %s", eid, uid)
+
+
+@bot.event
+async def on_scheduled_event_user_remove(
+    scheduled_event: discord.ScheduledEvent, user: discord.User
+):
+    """User removed their interest."""
+    gid, eid = _id_from_se(scheduled_event)
+    uid = _to_int(user.id)
+    if uid is None or eid is None:
+        log.warning("User-remove missing IDs – skipping")
+        _dump_attrs(scheduled_event, "remove_evt")
+        return
+
+    ensure_files(uid)
+    idx = load_index(uid)
+    new_idx = [
+        r
+        for r in idx
+        if not (r["id"] == eid and r["guild_id"] == (gid or r["guild_id"]))
+    ]
+    if new_idx != idx:
+        save_index(uid, new_idx)
+        await rebuild_calendar(uid, new_idx)
+        log.info("Removed event %s for user %s", eid, uid)
 
 
 @bot.event
 async def on_scheduled_event_update(
     before: discord.ScheduledEvent, after: discord.ScheduledEvent
 ):
-    """An event was edited (time, description, etc.)."""
-    gid, eid = _extract_ids(after)
+    """An event was edited."""
+    gid, eid = _id_from_se(after)
     if eid is None:
-        log.warning("Event update without event_id – skipping")
+        log.warning("Update missing event ID – skipping")
         _dump_attrs(after, "update_evt")
         return
 
@@ -100,20 +107,18 @@ async def on_scheduled_event_update(
 
         ensure_files(uid)
         idx = load_index(uid)
-        if any(r["id"] == eid and (gid is None or r["guild_id"] == gid) for r in idx):
+        if any(r["id"] == eid and (r["guild_id"] == gid or gid is None) for r in idx):
             await rebuild_calendar(uid, idx)
             log.info("Rebuilt calendar for %s after update to event %s", uid, eid)
 
 
 @bot.event
-async def on_scheduled_event_delete(
-    event: discord.ScheduledEvent,
-):
-    """Event deleted or cancelled."""
-    gid, eid = _id_from_se(event)
+async def on_scheduled_event_delete(scheduled_event: discord.ScheduledEvent):
+    """An event was deleted or cancelled."""
+    gid, eid = _id_from_se(scheduled_event)
     if eid is None:
-        log.warning("Event delete without event_id – skipping")
-        _dump_attrs(event, "delete_evt")
+        log.warning("Delete missing event ID – skipping")
+        _dump_attrs(scheduled_event, "delete_evt")
         return
 
     for idx_file in DATA_DIR.glob("*.json"):
@@ -127,21 +132,19 @@ async def on_scheduled_event_delete(
         new_idx = [
             r
             for r in idx
-            if not (r["id"] == eid and (gid is None or r["guild_id"] == gid))
+            if not (r["id"] == eid and (r["guild_id"] == gid or gid is None))
         ]
         if new_idx != idx:
             save_index(uid, new_idx)
             await rebuild_calendar(uid, new_idx)
-            log.info(
-                "Removed deleted event %s from user %s and rebuilt calendar", eid, uid
-            )
+            log.info("Removed deleted event %s for user %s", eid, uid)
 
 
-# ─────────────────── bot ready: kick off tasks ───────────────────
+# ─────────────────── bot ready: kick off server + poller ───────────────────
 
 
 @bot.event
 async def on_ready():
-    log.info("Bot is online; launching HTTP server and polling tasks.")
+    log.info("Bot online; launching HTTP server & poller.")
     asyncio.create_task(run_http())
     asyncio.create_task(poll_new_events())
