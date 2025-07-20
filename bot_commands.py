@@ -1,4 +1,4 @@
-"""bot_commands.py – fast /mycalendar for the Events → ICS bot (Pycord)"""
+"""bot_commands.py – slash-commands for the Events → ICS bot (fast DM version)"""
 
 import asyncio
 import logging
@@ -11,18 +11,32 @@ from file_helpers import ensure_files, feed_url, load_index
 
 log = logging.getLogger(__name__)
 
-# ───────────────────── helper coroutine ──────────────────────
 
-
-async def _build_and_dm(uid: int):
-    """Rebuild the user’s feed off-thread and DM them when done."""
-    ensure_files(uid)
+async def _rebuild_in_background(uid: int):
+    """Background task so /mycalendar returns fast."""
     idx = load_index(uid)
     if idx:
         await rebuild_calendar(uid, idx)
+    log.info("Background rebuild for %s finished", uid)
 
+
+@bot.slash_command(
+    name="mycalendar",
+    description="Get your personal calendar feed",
+)
+async def mycalendar(ctx: discord.ApplicationContext):
+    """DM the caller their webcal URL; rebuild runs in the background."""
+    uid = int(ctx.author.id)
+    log.info("/mycalendar invoked by user %s", uid)
+
+    # 1️⃣ Defer right away (ephemeral)
+    await ctx.defer(ephemeral=True)
+
+    # 2️⃣ Quick ops needed to craft the URL
+    ensure_files(uid)
     url = feed_url(uid)
 
+    # 3️⃣ DM the user immediately
     try:
         user = await bot.fetch_user(uid)
         if user:
@@ -34,24 +48,12 @@ async def _build_and_dm(uid: int):
     except Forbidden:
         log.warning("Cannot DM user %s (DMs disabled)", uid)
 
-
-# ───────────────────── slash-command ────────────────────────
-
-
-@bot.slash_command(
-    name="mycalendar",
-    description="Get your personal calendar feed",
-)
-async def mycalendar(ctx: discord.ApplicationContext):
-    """Respond instantly; rebuild & DM run in the background."""
-    uid = int(ctx.author.id)
-    log.info("/mycalendar invoked by user %s", uid)
-
-    # respond immediately (< 1 s)
-    await ctx.respond(
-        "🛠 Building your calendar… I’ll DM you the link shortly.",
+    # 4️⃣ Acknowledge the slash command
+    await ctx.followup.send(
+        "✅ Check your DMs for the calendar link! "
+        "I’ll finish updating the feed in the background.",
         ephemeral=True,
     )
 
-    # kick off background task; no need to await
-    asyncio.create_task(_build_and_dm(uid))
+    # 5️⃣ Kick off rebuild without blocking interaction
+    asyncio.create_task(_rebuild_in_background(uid))
