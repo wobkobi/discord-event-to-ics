@@ -1,18 +1,17 @@
-"""bot_setup.py – defines the Pycord Bot *and* runs it when executed directly."""
-
 import discord
 from config import TOKEN
 
-# ────────────────────── intents & construction ──────────────────────
-
+# ── create the bot ──
 intents = discord.Intents.default()
 intents.guilds = True
 intents.scheduled_events = True
+bot = discord.Bot(intents=intents)
 
-bot = discord.Bot(intents=intents)  # exported for other modules
+# ── register commands & handlers ──
+import bot_commands  # <— this registers /mycalendar
+import event_handlers  # <— this registers your on_... listeners
 
-# ─────────────────────────── entry-point ────────────────────────────
-
+# ── run it ──
 if __name__ == "__main__":
     print("🚀 Starting Events → ICS Bot…")
-    bot.run(TOKEN)  # blocking call
+    bot.run(TOKEN)
