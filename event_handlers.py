@@ -157,17 +157,23 @@ async def sync_existing_events():
     for guild in bot.guilds:
         events = await guild.fetch_scheduled_events()
         for ev in events:
-            async for user in ev.subscribers(limit=None):
-                gid, eid = guild.id, ev.id
-                uid = _to_int(user.id)
-                ensure_files(uid)
-                idx = load_index(uid)
-                if any(r["id"] == eid and r["guild_id"] == gid for r in idx):
-                    continue
-                idx.append({"guild_id": gid, "id": eid})
-                save_index(uid, idx)
-                await rebuild_calendar(uid, idx)
-                log.info("Synced old event %s into %s", eid, uid)
+            try:
+                async for user in ev.subscribers(limit=None):
+                    gid, eid = guild.id, ev.id
+                    uid = _to_int(user.id)
+                    ensure_files(uid)
+                    idx = load_index(uid)
+                    if any(r["id"] == eid and r["guild_id"] == gid for r in idx):
+                        continue
+                    idx.append({"guild_id": gid, "id": eid})
+                    save_index(uid, idx)
+                    await rebuild_calendar(uid, idx)
+                    log.info("Synced old event %s into %s", eid, uid)
+            except discord.NotFound:
+                log.info("Event %s vanished while syncing – skipping", ev.id)
+                continue
+
+        await asyncio.sleep(1)  # be gentle on the API
 
 
 # ─────────────────── bot ready: kick off tasks ───────────────────
