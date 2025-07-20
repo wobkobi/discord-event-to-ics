@@ -1,5 +1,6 @@
-"""bot_commands.py – slash-commands for the Events → ICS bot (Pycord)"""
+"""bot_commands.py – fast /mycalendar for the Events → ICS bot (Pycord)"""
 
+import asyncio
 import logging
 import discord
 from discord.errors import Forbidden
@@ -10,20 +11,11 @@ from file_helpers import ensure_files, feed_url, load_index
 
 log = logging.getLogger(__name__)
 
+# ───────────────────── helper coroutine ──────────────────────
 
-@bot.slash_command(
-    name="mycalendar",
-    description="Get your personal calendar feed",
-)
-async def mycalendar(ctx: discord.ApplicationContext):
-    """DM the caller their webcal URL and rebuild their feed first."""
-    uid = int(ctx.author.id)
-    log.info("/mycalendar invoked by user %s", uid)
 
-    # 1️⃣ Defer immediately (within the 3-second window)
-    await ctx.defer(ephemeral=True)
-
-    # 2️⃣ Now it’s safe to touch the disk or call APIs
+async def _build_and_dm(uid: int):
+    """Rebuild the user’s feed off-thread and DM them when done."""
     ensure_files(uid)
     idx = load_index(uid)
     if idx:
@@ -31,12 +23,6 @@ async def mycalendar(ctx: discord.ApplicationContext):
 
     url = feed_url(uid)
 
-    # 3️⃣ Follow-up message visible only to the caller
-    await ctx.followup.send(
-        "✅ I’ve sent you a DM with your calendar link.", ephemeral=True
-    )
-
-    # 4️⃣ Send the DM (ignore if user has DMs closed)
     try:
         user = await bot.fetch_user(uid)
         if user:
@@ -47,3 +33,25 @@ async def mycalendar(ctx: discord.ApplicationContext):
             log.info("Sent calendar link to user %s", uid)
     except Forbidden:
         log.warning("Cannot DM user %s (DMs disabled)", uid)
+
+
+# ───────────────────── slash-command ────────────────────────
+
+
+@bot.slash_command(
+    name="mycalendar",
+    description="Get your personal calendar feed",
+)
+async def mycalendar(ctx: discord.ApplicationContext):
+    """Respond instantly; rebuild & DM run in the background."""
+    uid = int(ctx.author.id)
+    log.info("/mycalendar invoked by user %s", uid)
+
+    # respond immediately (< 1 s)
+    await ctx.respond(
+        "🛠 Building your calendar… I’ll DM you the link shortly.",
+        ephemeral=True,
+    )
+
+    # kick off background task; no need to await
+    asyncio.create_task(_build_and_dm(uid))
