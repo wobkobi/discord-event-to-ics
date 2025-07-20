@@ -6,7 +6,7 @@ from pathlib import Path
 
 import discord
 
-from main import bot
+from bot_setup import bot 
 from calendar_builder import poll_new_events, rebuild_calendar
 from config import DATA_DIR
 from file_helpers import ensure_files, load_index, save_index
@@ -44,14 +44,15 @@ def _id_from_se(se: discord.ScheduledEvent):
 
 @bot.event
 async def on_scheduled_event_user_add(
-    scheduled_event: discord.ScheduledEvent, user: discord.User
+    event: discord.ScheduledEvent, user: discord.User
 ):
+    log.info("🔥 Got on_scheduled_event_user_add: %s / %s", event.id, user.id)
     """User marked themselves interested."""
-    gid, eid = _id_from_se(scheduled_event)
+    gid, eid = _id_from_se(event)
     uid = _to_int(user.id)
     if uid is None or eid is None:
         log.warning("User-add missing IDs – skipping")
-        _dump_attrs(scheduled_event, "add_evt")
+        _dump_attrs(event, "add_evt")
         return
 
     ensure_files(uid)
@@ -65,14 +66,14 @@ async def on_scheduled_event_user_add(
 
 @bot.event
 async def on_scheduled_event_user_remove(
-    scheduled_event: discord.ScheduledEvent, user: discord.User
+    event: discord.ScheduledEvent, user: discord.User
 ):
     """User removed their interest."""
-    gid, eid = _id_from_se(scheduled_event)
+    gid, eid = _id_from_se(event)
     uid = _to_int(user.id)
     if uid is None or eid is None:
         log.warning("User-remove missing IDs – skipping")
-        _dump_attrs(scheduled_event, "remove_evt")
+        _dump_attrs(event, "remove_evt")
         return
 
     ensure_files(uid)

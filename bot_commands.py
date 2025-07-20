@@ -4,7 +4,7 @@ import logging
 import discord
 from discord.errors import Forbidden
 
-from main import bot
+from bot_setup import bot 
 from calendar_builder import rebuild_calendar
 from file_helpers import ensure_files, feed_url, load_index
 

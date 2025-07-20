@@ -1,17 +1,12 @@
-import discord
+import logging
 from config import TOKEN
+from bot_setup import bot  # ← import here, not from event handlers
 
-# ── create the bot ──
-intents = discord.Intents.default()
-intents.guilds = True
-intents.scheduled_events = True
-bot = discord.Bot(intents=intents)
+# register everything (these files will import bot_setup, not main)
+import bot_commands
+import event_handlers
 
-# ── register commands & handlers ──
-import bot_commands  # <— this registers /mycalendar
-import event_handlers  # <— this registers your on_... listeners
-
-# ── run it ──
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.WARNING)
     print("🚀 Starting Events → ICS Bot…")
     bot.run(TOKEN)
