@@ -1,5 +1,4 @@
-# config.py – central settings for the bot
-# loads values from .env, makes sure data dirs exist, and sets up logging
+"""config.py – project settings without static-type hints."""
 
 import datetime as dt
 import logging
@@ -8,41 +7,40 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# read .env file if present
+# Load values from .env (if present)
 load_dotenv()
 
-# discord bot token
-TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
-if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN env var is required")
+# logging
 
-# base url for webcal links
-BASE_URL = os.getenv("BASE_URL", "http://localhost").rstrip("/")
-
-# small web server that serves .ics files
-HTTP_PORT = int(os.getenv("HTTP_PORT", "9000"))
-
-# how often to rebuild every user’s feed (minutes)
-POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "15"))
-
-# use the system timezone for all calendar output
-TIMEZONE = dt.datetime.now().astimezone().tzinfo
-
-# folder where .ics files and indexes live
-DATA_DIR = Path(os.getenv("DATA_DIR", "calendars"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-# basic logging config
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
+# Quiet noisy libraries
+logging.getLogger("interactions").setLevel(logging.CRITICAL)
 
-# filter out noisy 404 lines from Pycord http logs
+
 class _Ignore404(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        return not ("GET https" in record.getMessage() and "404" in record.getMessage())
+
+    def filter(self, record):
+        msg = record.getMessage()
+        return not (msg.startswith("GET::https") and "404" in msg)
 
 
-logging.getLogger("discord.http").addFilter(_Ignore404())
+logging.getLogger("interactions").addFilter(_Ignore404())
+
+# env config
+
+TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
+if not TOKEN:
+    raise RuntimeError("⚠️ DISCORD_TOKEN env var is required")
+
+BASE_URL = os.getenv("BASE_URL", "http://localhost").rstrip("/")
+HTTP_PORT = int(os.getenv("HTTP_PORT", "9000"))
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "15"))  # minutes
+
+TIMEZONE = dt.datetime.now().astimezone().tzinfo  # system TZ
+
+DATA_DIR = Path(os.getenv("DATA_DIR", "calendars"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
