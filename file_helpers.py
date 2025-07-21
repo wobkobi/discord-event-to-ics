@@ -1,73 +1,68 @@
-# file_helpers.py – reads and writes user and guild data
+"""file_helpers.py – path helpers and JSON/ICS persistence (no type-hints)."""
 
 import json
+import logging
 from pathlib import Path
+from urllib.parse import urlparse
 
-from config import BASE_URL
+from ics import Calendar
 
-# where we store everything
-DATA_DIR = Path("calendars")
-GUILD_DIR = DATA_DIR / "guilds"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-GUILD_DIR.mkdir(parents=True, exist_ok=True)
+from config import BASE_URL, DATA_DIR
 
-# helpers for paths
+log = logging.getLogger(__name__)
 
-
-def ics_path(user_id: int) -> Path:
-    return DATA_DIR / f"{user_id}.ics"
+# URL + path helpers 
 
 
-def index_path(user_id: int) -> Path:
-    return DATA_DIR / f"{user_id}.json"
+def feed_url(uid):
+    """Return the public *webcal://* URL for a user's .ics feed."""
+    host = urlparse(BASE_URL).netloc
+    return f"webcal://{host}/cal/{uid}.ics"
 
 
-# user index helpers
+def idx_path(uid):
+    return DATA_DIR / f"{uid}.json"
 
 
-def ensure_files(user_id: int) -> None:
-    # create an empty index if it doesn’t exist yet
-    p = index_path(user_id)
-    if not p.exists():
-        p.write_text("[]")
+def ics_path(uid):
+    return DATA_DIR / f"{uid}.ics"
 
 
-def load_index(user_id: int) -> list[dict]:
-    # get the list of events the user is subscribed to
-    return json.loads(index_path(user_id).read_text())
+# JSON index I/O
 
 
-def save_index(user_id: int, idx: list[dict]) -> None:
-    # write the updated event list back to disk
-    index_path(user_id).write_text(json.dumps(idx))
+def load_index(uid):
+    """Read the user's JSON index. Return an empty list on any problem."""
+    try:
+        raw = idx_path(uid).read_text()
+        data = json.loads(raw) if raw.strip() else []
+        log.info("Loaded index for user %s, %d entries", uid, len(data))
+        return data
+    except Exception:
+        log.exception("Failed loading index for user %s", uid)
+        return []
 
 
-# guild alert helpers
+def save_index(uid, idx):
+    try:
+        idx_path(uid).write_text(json.dumps(idx))
+        log.info("Saved index for user %s, %d entries", uid, len(idx))
+    except Exception:
+        log.exception("Failed saving index for user %s", uid)
 
 
-def _gcfg(gid: int) -> Path:
-    return GUILD_DIR / f"{gid}.json"
+# file existence guard
 
 
-def load_guild_alerts(guild_id: int) -> tuple[int, int | None]:
-    # return (first_alert, second_alert) in minutes
-    p = _gcfg(guild_id)
-    if p.exists():
-        data = json.loads(p.read_text())
-        a1 = int(data.get("alert1", 60))
-        a2_raw = data.get("alert2")
-        a2 = int(a2_raw) if a2_raw is not None else None
-        return a1, a2
-    return 60, None
+def ensure_files(uid):
+    """Guarantee both JSON and ICS files exist for this user."""
+    try:
+        if not idx_path(uid).exists():
+            log.info("Creating new index file for user %s", uid)
+            save_index(uid, [])
 
-
-def save_guild_alerts(guild_id: int, alert1: int, alert2: int | None) -> None:
-    # store the default alerts for this guild
-    json.dump({"alert1": alert1, "alert2": alert2}, _gcfg(guild_id).open("w"))
-
-
-# build the public webcal url for a user
-
-
-def feed_url(user_id: int) -> str:
-    return f"webcal://{BASE_URL}/cal/{user_id}.ics"
+        if not ics_path(uid).exists():
+            log.info("Creating new ICS feed file for user %s", uid)
+            ics_path(uid).write_bytes(Calendar().serialize().encode())
+    except Exception:
+        log.exception("Failed ensuring files for user %s", uid)
