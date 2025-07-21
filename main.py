@@ -1,11 +1,13 @@
-"""main.py – launches the Events → ICS bot"""
+# main.py – launches the bot
+# imports everything once so commands and listeners are registered, then runs
 
 import logging
-from config import TOKEN
-from bot_setup import bot  # ← import bot here
 
-# ── register commands & listeners (these also import bot_setup, *not* main) ──
-import calendar_builder  # defines rebuild_calendar / poll_new_events
+from config import TOKEN
+from bot_setup import bot  # shared bot instance
+
+# import side‑effect modules that add commands, listeners, and tasks
+import calendar_builder
 import bot_commands
 import event_handlers
 
@@ -14,5 +16,5 @@ if __name__ == "__main__":
         level=logging.WARNING,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-    print("🚀 Starting Events → ICS Bot…")
+    print("🚀 starting events → ics bot…")
     bot.run(TOKEN)

@@ -1,4 +1,6 @@
-"""bot_commands.py – slash-commands for the Events → ICS bot (fast DM version)"""
+# bot_commands.py – slash commands for the calendar bot
+# /mycalendar  – DMs you your personal webcal link (feed rebuilds in the background)
+# /setalerts <min1> [min2] – sets default popup reminders
 
 import asyncio
 import logging
@@ -7,53 +9,87 @@ from discord.errors import Forbidden
 
 from bot_setup import bot
 from calendar_builder import rebuild_calendar
-from file_helpers import ensure_files, feed_url, load_index
+from file_helpers import (
+    ensure_files,
+    feed_url,
+    load_index,
+    save_guild_alerts,
+)
 
 log = logging.getLogger(__name__)
 
 
-async def _rebuild_in_background(uid: int):
-    """Background task so /mycalendar returns fast."""
+# helper: rebuild a user’s feed without blocking the slash response
+async def _rebuild_async(uid: int):
     idx = load_index(uid)
     if idx:
         await rebuild_calendar(uid, idx)
-    log.info("Background rebuild for %s finished", uid)
+    log.info("calendar rebuild finished for %s", uid)
 
 
-@bot.slash_command(
-    name="mycalendar",
-    description="Get your personal calendar feed",
-)
+# /mycalendar – send the link and kick off a rebuild
+@bot.slash_command(name="mycalendar", description="DM me my personal calendar link")
 async def mycalendar(ctx: discord.ApplicationContext):
-    """DM the caller their webcal URL; rebuild runs in the background."""
     uid = int(ctx.author.id)
-    log.info("/mycalendar invoked by user %s", uid)
+    log.info("/mycalendar by %s", uid)
 
-    # 1️⃣ Defer right away (ephemeral)
+    # keeps the interaction alive
     await ctx.defer(ephemeral=True)
 
-    # 2️⃣ Quick ops needed to craft the URL
     ensure_files(uid)
     url = feed_url(uid)
 
-    # 3️⃣ DM the user immediately
+    # DM the link
     try:
         user = await bot.fetch_user(uid)
-        if user:
-            await user.send(
-                f"Your calendar feed:\n• {url}\n\n"
-                "Subscribe in your calendar app using this URL."
-            )
-            log.info("Sent calendar link to user %s", uid)
-    except Forbidden:
-        log.warning("Cannot DM user %s (DMs disabled)", uid)
+        await user.send(
+            "Hey there! 🎉\n"
+            "Here’s your calendar feed link:\n"
+            f"`{url}`\n\n"
+            "Copy & paste that into your calendar app."
+        )
+        dm_ok = True
+    except (Forbidden, AttributeError):
+        dm_ok = False
+        log.warning("DM failed for %s", uid)
 
-    # 4️⃣ Acknowledge the slash command
-    await ctx.followup.send(
-        "✅ Check your DMs for the calendar link! "
-        "I’ll finish updating the feed in the background.",
-        ephemeral=True,
+    msg = (
+        "✅ Check your DMs for the link!"
+        if dm_ok
+        else "⚠️ I couldn’t DM you. Are your DMs closed?"
     )
+    await ctx.followup.send(msg, ephemeral=True)
 
-    # 5️⃣ Kick off rebuild without blocking interaction
-    asyncio.create_task(_rebuild_in_background(uid))
+    # rebuild feed in the background
+    asyncio.create_task(_rebuild_async(uid))
+
+
+# /setalerts – configure server‑wide default reminders
+@bot.slash_command(
+    name="setalerts",
+    description="Set default popup reminders (minutes before event)",
+    default_member_permissions=discord.Permissions(manage_guild=True),
+)
+async def setalerts(
+    ctx: discord.ApplicationContext,
+    alert1: int,  # required first alert in minutes
+    alert2: int | None = None,  # optional second alert in minutes
+):
+    if alert1 <= 0 or (alert2 is not None and alert2 <= 0):
+        await ctx.respond("Times must be positive minutes.", ephemeral=True)
+        return
+
+    alerts = sorted([alert1] + ([alert2] if alert2 is not None else []))
+    alert1 = alerts[0]
+    alert2 = alerts[1] if len(alerts) > 1 else None
+
+    save_guild_alerts(ctx.guild_id, alert1, alert2)
+
+    txt = (
+        f"Default reminders set to {alert1} min"
+        + (f" and {alert2} min" if alert2 else "")
+        + " before every event."
+    )
+    await ctx.respond(txt, ephemeral=True)
+
+    log.info("Guild %s updated alerts to %s", ctx.guild_id, alerts)
